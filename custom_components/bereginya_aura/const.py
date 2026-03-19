@@ -1,7 +1,7 @@
 """Constants for the Beregynya AURA integration."""
 
 DOMAIN = "bereginya_aura"
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 
 API_ENDPOINT = "/api/bereginya_aura/v1/snapshot"
 FRONTEND_STATIC_BASE = "/bereginya-aura"
@@ -76,4 +76,20 @@ SOURCE_KEY_ALIASES = {
     "beach_flag_calculated": "sensor.beach_flag_calculated",
     "beach_crowding_estimate": "sensor.beach_crowding_estimate",
     "beach_recommendation": "sensor.beach_recommendation",
+    "jellyfish_risk": "sensor.jellyfish_risk",
+    "jellyfish_official_risk": "sensor.jellyfish_official_risk",
+    "jellyfish_official_status": "sensor.jellyfish_official_status",
+    "jellyfish_species_count": "sensor.jellyfish_species_count",
+    "jellyfish_last_update": "sensor.jellyfish_last_update",
+    "jellyfish_nearest_beach": "sensor.jellyfish_nearest_beach",
+    "jellyfish_nearest_beach_distance": "sensor.jellyfish_nearest_beach_distance",
+    "beach_water_quality_official": "sensor.beach_water_quality_official",
+    "beach_water_temperature_official": "sensor.beach_water_temperature_official",
+    "tiger_mosquito_risk": "sensor.tiger_mosquito_risk",
+    "tiger_mosquito_index": "sensor.tiger_mosquito_index",
+    "mosquito_index": "sensor.mosquito_index",
+    "tiger_mosquito_reports_30d": "sensor.tiger_mosquito_reports_30d",
+    "tiger_mosquito_reports_180d": "sensor.tiger_mosquito_reports_180d",
+    "tiger_mosquito_high_confidence": "sensor.tiger_mosquito_high_confidence",
+    "tiger_mosquito_last_report": "sensor.tiger_mosquito_last_report",
 }

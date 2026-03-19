@@ -92,9 +92,15 @@ class BeregynyaAuraCard extends HTMLElement {
       lines.push(`- Home latitude: \`${home.latitude ?? "n/a"}\``);
       lines.push(`- Home longitude: \`${home.longitude ?? "n/a"}\``);
       if (meta.fetch) {
+        const fetch = meta.fetch;
         lines.push(
-          `- Fetch weather/marine/air: \`${meta.fetch.weather || "n/a"}\` / \`${meta.fetch.marine || "n/a"}\` / \`${meta.fetch.air_quality || "n/a"}\``,
+          `- Fetch weather/marine/air: \`${fetch.weather || "n/a"}\` / \`${fetch.marine || "n/a"}\` / \`${fetch.air_quality || "n/a"}\``,
         );
+        if (fetch.jellyfish || fetch.tiger_mosquito) {
+          lines.push(
+            `- Fetch jellyfish/tiger_mosquito: \`${fetch.jellyfish || "n/a"}\` / \`${fetch.tiger_mosquito || "n/a"}\``,
+          );
+        }
       }
       if (meta.ha_overrides) {
         lines.push(
@@ -125,8 +131,12 @@ class BeregynyaAuraCard extends HTMLElement {
         lines.push("");
         lines.push(`## Forecast ${daily.length}d`);
         for (const day of daily) {
+          const extra = [
+            day.mosquito_risk_est ? `, mosquito ${day.mosquito_risk_est}` : "",
+            day.jellyfish_risk_est ? `, jellyfish ${day.jellyfish_risk_est}` : "",
+          ].join("");
           lines.push(
-            `- \`${day.date}\`: ${day.temp_min}/${day.temp_max} degC, rain ${day.rain_probability_max}% (${day.rain_sum_mm} mm), UV ${day.uv_max}, sea ${day.sea_temp_avg} degC, AQI ${day.aqi_max}, allergy ${day.allergy_index}/100, asthma ${day.asthma_risk}, beach ${day.beach_score}/10 (${day.beach_flag})`,
+            `- \`${day.date}\`: ${day.temp_min}/${day.temp_max} degC, rain ${day.rain_probability_max}% (${day.rain_sum_mm} mm), UV ${day.uv_max}, sea ${day.sea_temp_avg} degC, AQI ${day.aqi_max}, allergy ${day.allergy_index}/100, asthma ${day.asthma_risk}, beach ${day.beach_score}/10 (${day.beach_flag})${extra}`,
           );
         }
       }

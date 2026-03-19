@@ -9,6 +9,8 @@ entities. It can optionally reuse selected HA entities in `hybrid` mode.
 
 - Serves own API: `/api/bereginya_aura/v1/snapshot`
 - Pulls core data from Open-Meteo directly (weather, marine, air quality, pollen, dust)
+- Pulls official jellyfish/beach state for nearest beach from PlatgesCat (ACA)
+- Pulls tiger mosquito observations around home point from Mosquito Alert API
 - Calculates derived metrics internally (weather summary, beach indexes, recommendation)
 - Uses only HA home position (`latitude`, `longitude`, `elevation`, `timezone`) as base input
 - Optionally overrides selected metrics from HA entities via mapping
@@ -52,7 +54,9 @@ Response:
     "fetch": {
       "weather": "ok",
       "marine": "ok",
-      "air_quality": "ok"
+      "air_quality": "ok",
+      "jellyfish": "ok",
+      "tiger_mosquito": "ok"
     },
     "ha_overrides": {
       "attempted": 0,
@@ -82,7 +86,9 @@ Response:
       "aqi_max": 42,
       "allergy_index": 31,
       "asthma_risk": "low",
-      "beach_score": 7
+      "beach_score": 7,
+      "mosquito_risk_est": "low",
+      "jellyfish_risk_est": "off_season"
     }
   ]
 }
@@ -111,6 +117,8 @@ bereginya_aura:
     aqi: sensor.air_quality_european_aqi
     pollen_total: sensor.pollen_total
     pollen_ambrosia: sensor.pollen_ragweed
+    jellyfish_risk: sensor.jellyfish_risk
+    mosquito_index: sensor.mosquito_index
     beach_comfort_index: sensor.beach_comfort_index
 ```
 

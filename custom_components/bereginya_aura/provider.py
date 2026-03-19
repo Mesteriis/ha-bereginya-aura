@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlencode
@@ -31,6 +32,16 @@ from .const import (
 _OPEN_METEO_WEATHER = "https://api.open-meteo.com/v1/forecast"
 _OPEN_METEO_AIR = "https://air-quality-api.open-meteo.com/v1/air-quality"
 _OPEN_METEO_MARINE = "https://marine-api.open-meteo.com/v1/marine"
+_PLATGESCAT_FRONT = (
+    "https://aplicacions.aca.gencat.cat/platgescat2/"
+    "agencia-catalana-del-agua-backend/web/app.php/api/front/"
+)
+_PLATGESCAT_DETAIL_BASE = (
+    "https://aplicacions.aca.gencat.cat/platgescat2/"
+    "agencia-catalana-del-agua-backend/web/app.php/api/playadetalle/"
+)
+_MOSQUITO_ALERT_OBSERVATIONS = "https://api.mosquitoalert.com/v1/observations/"
+_TIGER_MOSQUITO_TAXON_ID = 112
 
 
 def normalize_options(raw_options: dict[str, Any] | None) -> dict[str, Any]:
@@ -182,6 +193,171 @@ def _asthma_risk(aqi: float, pm25: float, dust: float, pollen_total: float) -> s
     return "low"
 
 
+def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Compute approximate distance between two points on Earth."""
+    rad = math.pi / 180.0
+    d_lat = (lat2 - lat1) * rad
+    d_lon = (lon2 - lon1) * rad
+    a = (
+        math.sin(d_lat / 2) ** 2
+        + math.cos(lat1 * rad) * math.cos(lat2 * rad) * math.sin(d_lon / 2) ** 2
+    )
+    return 6371.0 * (2 * math.atan2(math.sqrt(a), math.sqrt(max(0.0, 1.0 - a))))
+
+
+def _jellyfish_risk_from_weather(sea_temp: float, wave_height: float, wind_speed: float) -> str:
+    """Compute jellyfish risk from marine conditions."""
+    score = 0.0
+    if sea_temp >= 25:
+        score += 2.0
+    elif sea_temp >= 23:
+        score += 1.0
+
+    if wave_height <= 0.6:
+        score += 1.0
+    elif wave_height >= 1.5:
+        score -= 1.0
+
+    if wind_speed <= 12:
+        score += 1.0
+    elif wind_speed >= 25:
+        score -= 1.0
+
+    if score >= 3.0:
+        return "high"
+    if score >= 1.5:
+        return "moderate"
+    return "low"
+
+
+def _normalize_jellyfish_risk(
+    *,
+    status_label: str | None,
+    status_tag: str | None,
+    off_season: bool,
+) -> str:
+    """Normalize PlatgesCat jellyfish labels to compact risk buckets."""
+    if off_season:
+        return "off_season"
+
+    source = f"{status_label or ''} {status_tag or ''}".lower()
+    if not source.strip():
+        return "unknown"
+    if any(token in source for token in ("_molt_perill_", "molt perill", "muy alto", "very high")):
+        return "very_high"
+    if any(token in source for token in ("_amb_perill_", "amb perill", "con peligro", "dangerous")):
+        return "high"
+    if any(token in source for token in ("_sense_perill_", "sense perill", "sin peligro")):
+        return "moderate"
+    if any(token in source for token in ("_sense_presencia_", "sense meduses", "sin medusas", "no jellyfish")):
+        return "low"
+    if any(token in source for token in ("_fora_de_temporada_", "fora de temporada", "fuera de temporada")):
+        return "off_season"
+    return "unknown"
+
+
+def _mosquito_index_from_weather(humidity: float, rain_prob_next_6h: float, wind_speed: float) -> int:
+    """Estimate mosquito suitability from weather."""
+    score = humidity * 0.45 + rain_prob_next_6h * 0.55 - max(0.0, wind_speed - 10.0) * 1.4
+    return max(0, min(100, int(round(score))))
+
+
+def _mosquito_risk_from_index(index: int) -> str:
+    """Map 0..100 index to compact risk."""
+    if index >= 75:
+        return "very_high"
+    if index >= 55:
+        return "high"
+    if index >= 35:
+        return "moderate"
+    if index >= 20:
+        return "low"
+    return "very_low"
+
+
+def _forecast_mosquito_risk(
+    *,
+    baseline_index: int,
+    temp_min: float,
+    temp_max: float,
+    rain_probability_max: int,
+    wind_max_kmh: float,
+) -> str:
+    """Estimate day-level mosquito risk from forecast + current baseline."""
+    avg_temp = (temp_min + temp_max) / 2
+    score = baseline_index / 22.0
+
+    if 22 <= avg_temp <= 32:
+        score += 1.7
+    elif 18 <= avg_temp < 22:
+        score += 0.8
+    elif avg_temp < 12 or avg_temp > 36:
+        score -= 1.0
+
+    if rain_probability_max >= 65:
+        score += 1.0
+    elif rain_probability_max >= 35:
+        score += 0.4
+
+    if wind_max_kmh >= 28:
+        score -= 1.0
+    elif wind_max_kmh >= 20:
+        score -= 0.4
+
+    if score >= 4.6:
+        return "very_high"
+    if score >= 3.2:
+        return "high"
+    if score >= 2.0:
+        return "moderate"
+    if score >= 1.0:
+        return "low"
+    return "very_low"
+
+
+def _forecast_jellyfish_risk(
+    *,
+    baseline_risk: str,
+    sea_temp_avg: float,
+    wave_height_max: float,
+    wind_max_kmh: float,
+) -> str:
+    """Estimate day-level jellyfish risk from marine forecast + baseline."""
+    if baseline_risk == "off_season":
+        return "off_season"
+
+    rank = {
+        "unknown": 0.5,
+        "low": 1.0,
+        "moderate": 2.0,
+        "high": 3.0,
+        "very_high": 4.0,
+    }.get(baseline_risk, 0.5)
+
+    if sea_temp_avg >= 25:
+        rank += 1.0
+    elif sea_temp_avg >= 23:
+        rank += 0.5
+
+    if wave_height_max <= 0.6:
+        rank += 0.6
+    elif wave_height_max >= 1.5:
+        rank -= 0.8
+
+    if wind_max_kmh <= 12:
+        rank += 0.6
+    elif wind_max_kmh >= 25:
+        rank -= 0.8
+
+    if rank >= 4.5:
+        return "very_high"
+    if rank >= 3.0:
+        return "high"
+    if rank >= 1.8:
+        return "moderate"
+    return "low"
+
+
 def _daily_hourly_values(hourly: dict[str, Any], key: str, day: str) -> list[float]:
     """Extract numeric values for one day from hourly arrays."""
     times = hourly.get("time")
@@ -296,8 +472,24 @@ class AuraSnapshotProvider:
         weather_task = self._async_fetch_json(weather_url)
         marine_task = self._async_fetch_json(marine_url)
         air_task = self._async_fetch_json(air_url)
-        (weather_data, weather_err), (marine_data, marine_err), (air_data, air_err) = (
-            await asyncio.gather(weather_task, marine_task, air_task)
+        jellyfish_task = self._async_fetch_jellyfish_data(
+            latitude=latitude, longitude=longitude
+        )
+        mosquito_task = self._async_fetch_tiger_mosquito_data(
+            latitude=latitude, longitude=longitude
+        )
+        (
+            (weather_data, weather_err),
+            (marine_data, marine_err),
+            (air_data, air_err),
+            (jellyfish_data, jellyfish_err),
+            (mosquito_data, mosquito_err),
+        ) = await asyncio.gather(
+            weather_task,
+            marine_task,
+            air_task,
+            jellyfish_task,
+            mosquito_task,
         )
 
         metrics = self._build_internal_metrics(
@@ -307,11 +499,24 @@ class AuraSnapshotProvider:
             marine_data=marine_data,
             air_data=air_data,
         )
+        jellyfish_metrics, jellyfish_risk_for_forecast = self._build_jellyfish_metrics(
+            metrics=metrics,
+            jellyfish_data=jellyfish_data,
+        )
+        mosquito_metrics, mosquito_index_for_forecast = self._build_tiger_mosquito_metrics(
+            metrics=metrics,
+            mosquito_data=mosquito_data,
+        )
+        metrics.extend(jellyfish_metrics)
+        metrics.extend(mosquito_metrics)
+
         forecast_daily = self._build_forecast_daily(
             forecast_days=forecast_days,
             weather_data=weather_data,
             marine_data=marine_data,
             air_data=air_data,
+            mosquito_baseline_index=mosquito_index_for_forecast,
+            jellyfish_baseline_risk=jellyfish_risk_for_forecast,
         )
         overrides = self._apply_ha_sources(metrics)
 
@@ -332,6 +537,8 @@ class AuraSnapshotProvider:
                     "weather": "ok" if weather_err is None else weather_err,
                     "marine": "ok" if marine_err is None else marine_err,
                     "air_quality": "ok" if air_err is None else air_err,
+                    "jellyfish": "ok" if jellyfish_err is None else jellyfish_err,
+                    "tiger_mosquito": "ok" if mosquito_err is None else mosquito_err,
                 },
                 "ha_overrides": overrides,
                 "forecast_count": len(forecast_daily),
@@ -351,6 +558,425 @@ class AuraSnapshotProvider:
             return payload, None
         except (TimeoutError, ClientError, ValueError) as err:
             return None, str(err)
+
+    async def _async_fetch_jellyfish_data(
+        self, *, latitude: float, longitude: float
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        """Fetch nearest-beach jellyfish data from PlatgesCat."""
+        front_data, front_err = await self._async_fetch_json(_PLATGESCAT_FRONT)
+        if not isinstance(front_data, dict):
+            return None, front_err or "front_unavailable"
+
+        beaches = front_data.get("playas")
+        if not isinstance(beaches, list) or not beaches:
+            return None, "no_beaches_in_front_payload"
+
+        nearest: dict[str, Any] | None = None
+        nearest_dist_km = 10_000.0
+        for beach in beaches:
+            if not isinstance(beach, dict):
+                continue
+            lat = _safe_float(beach.get("latitud"), math.nan)
+            lon = _safe_float(beach.get("longitud"), math.nan)
+            if math.isnan(lat) or math.isnan(lon):
+                continue
+            dist_km = _haversine_km(latitude, longitude, lat, lon)
+            if dist_km < nearest_dist_km:
+                nearest = beach
+                nearest_dist_km = dist_km
+
+        if nearest is None:
+            return None, "no_nearest_beach"
+
+        detail_data: dict[str, Any] | None = None
+        detail_err: str | None = None
+        beach_id = nearest.get("id")
+        if isinstance(beach_id, int):
+            detail_url = f"{_PLATGESCAT_DETAIL_BASE}{beach_id}"
+            detail_data, detail_err = await self._async_fetch_json(detail_url)
+
+        result: dict[str, Any] = {
+            "beach_id": nearest.get("id"),
+            "beach_name": nearest.get("nombre"),
+            "beach_municipality": nearest.get("municipio"),
+            "distance_km": round(nearest_dist_km, 2),
+            "lat": _safe_float(nearest.get("latitud"), latitude),
+            "lon": _safe_float(nearest.get("longitud"), longitude),
+            "front_medusa_tag": nearest.get("medusaetiqueta"),
+            "front_medusa_label": nearest.get("medusasliteral"),
+            "front_water_quality_tag": nearest.get("calidadaguaetiqueta"),
+            "front_water_temp": _safe_float(nearest.get("temperaturaagua"), 0.0),
+        }
+
+        items = detail_data.get("items", {}) if isinstance(detail_data, dict) else {}
+        if isinstance(items, dict):
+            medusas = items.get("medusas")
+            if isinstance(medusas, dict):
+                result["status_label"] = medusas.get("peligrosidadTrad")
+                result["status_tag"] = medusas.get("peligrosidadEtiqueta")
+                result["status_icon"] = medusas.get("icono")
+                result["species_list"] = (
+                    medusas.get("llistatMeduses")
+                    if isinstance(medusas.get("llistatMeduses"), list)
+                    else []
+                )
+                fecha_mod = medusas.get("fechaModificacion")
+                if isinstance(fecha_mod, dict):
+                    result["last_update"] = fecha_mod.get("date")
+                elif isinstance(fecha_mod, str):
+                    result["last_update"] = fecha_mod
+
+            quality = items.get("calidadPlaya")
+            if isinstance(quality, dict):
+                result["water_quality"] = quality.get("estado")
+                result["water_quality_tag"] = quality.get("estado_etiqueta")
+
+            state = items.get("estadoPlaya")
+            if isinstance(state, dict):
+                result["water_temp_c"] = _safe_float(
+                    state.get("temperaturaAgua"), result["front_water_temp"]
+                )
+                result["sky_text"] = state.get("traduccionCielo")
+
+            sea = items.get("estadoMar")
+            if isinstance(sea, dict):
+                result["wave_height"] = _safe_float(sea.get("alturaolas"), 0.0)
+                result["wind_speed"] = _safe_float(sea.get("velocidadviento"), 0.0)
+
+            result["off_season"] = bool(items.get("foraTemporada"))
+
+        if detail_err is not None:
+            return result, f"detail_partial:{detail_err}"
+        return result, None
+
+    async def _async_fetch_tiger_mosquito_data(
+        self, *, latitude: float, longitude: float
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        """Fetch tiger mosquito observations from Mosquito Alert API."""
+        now = datetime.now(tz=UTC)
+        after_180 = (now - timedelta(days=180)).isoformat().replace("+00:00", "Z")
+        after_30 = (now - timedelta(days=30)).isoformat().replace("+00:00", "Z")
+        point = f"{longitude:.6f},{latitude:.6f}"
+
+        common_params = {
+            "point": point,
+            "dist": 20_000,
+            "identification_taxon_ids": str(_TIGER_MOSQUITO_TAXON_ID),
+            "order_by": "-received_at",
+        }
+        url_180 = _build_url(
+            _MOSQUITO_ALERT_OBSERVATIONS,
+            {
+                **common_params,
+                "received_at_after": after_180,
+                "page_size": 200,
+            },
+        )
+        url_30 = _build_url(
+            _MOSQUITO_ALERT_OBSERVATIONS,
+            {
+                **common_params,
+                "received_at_after": after_30,
+                "page_size": 1,
+            },
+        )
+
+        (data_180, err_180), (data_30, err_30) = await asyncio.gather(
+            self._async_fetch_json(url_180),
+            self._async_fetch_json(url_30),
+        )
+
+        if not isinstance(data_180, dict) and not isinstance(data_30, dict):
+            return None, err_180 or err_30 or "mosquito_api_unavailable"
+
+        results_180 = data_180.get("results", []) if isinstance(data_180, dict) else []
+        if not isinstance(results_180, list):
+            results_180 = []
+
+        count_180 = _safe_int(
+            data_180.get("count") if isinstance(data_180, dict) else len(results_180),
+            len(results_180),
+        )
+        count_30 = _safe_int(
+            data_30.get("count") if isinstance(data_30, dict) else 0,
+            0,
+        )
+
+        high_confidence = 0
+        confidence_sum = 0.0
+        confidence_count = 0
+        latest_received_at: datetime | None = None
+        latest_uuid: str | None = None
+
+        for row in results_180:
+            if not isinstance(row, dict):
+                continue
+            received_raw = row.get("received_at") or row.get("created_at")
+            if isinstance(received_raw, str):
+                parsed = dt_util.parse_datetime(received_raw)
+                if parsed is not None:
+                    if parsed.tzinfo is None:
+                        parsed = parsed.replace(tzinfo=UTC)
+                    if latest_received_at is None or parsed > latest_received_at:
+                        latest_received_at = parsed
+                        latest_uuid = row.get("uuid")
+
+            ident = row.get("identification")
+            result = ident.get("result") if isinstance(ident, dict) else {}
+            if isinstance(result, dict):
+                if result.get("is_high_confidence") is True:
+                    high_confidence += 1
+                confidence = result.get("confidence")
+                if confidence is not None:
+                    confidence_sum += _safe_float(confidence, 0.0)
+                    confidence_count += 1
+
+        high_conf_pct = 0
+        if results_180:
+            high_conf_pct = int(round((high_confidence / len(results_180)) * 100))
+        confidence_avg = 0
+        if confidence_count > 0:
+            confidence_avg = int(round((confidence_sum / confidence_count) * 100))
+
+        latest_iso: str | None = None
+        latest_days_ago = 999
+        if latest_received_at is not None:
+            latest_iso = latest_received_at.astimezone(UTC).isoformat()
+            latest_days_ago = max(0, int((now - latest_received_at).total_seconds() / 86_400))
+
+        partial_errors = [err for err in (err_180, err_30) if err is not None]
+        error_text = "; ".join(partial_errors) if partial_errors else None
+
+        return (
+            {
+                "count_30d": count_30,
+                "count_180d": count_180,
+                "high_confidence_pct": high_conf_pct,
+                "confidence_avg_pct": confidence_avg,
+                "latest_received_at": latest_iso,
+                "latest_days_ago": latest_days_ago,
+                "latest_uuid": latest_uuid,
+            },
+            error_text,
+        )
+
+    def _build_jellyfish_metrics(
+        self,
+        *,
+        metrics: list[dict[str, Any]],
+        jellyfish_data: dict[str, Any] | None,
+    ) -> tuple[list[dict[str, Any]], str]:
+        """Build jellyfish-related metrics with official + model fallback."""
+        values = {item.get("entity_id"): item.get("value") for item in metrics}
+        sea_temp = _safe_float(values.get("sensor.sea_temperature_openmeteo"), 0.0)
+        wave_height = _safe_float(values.get("sensor.wave_height"), 0.0)
+        wind_speed = _safe_float(values.get("sensor.wind_speed"), 0.0)
+        fallback_risk = _jellyfish_risk_from_weather(sea_temp, wave_height, wind_speed)
+
+        official_status = None
+        official_tag = None
+        official_species_count = 0
+        official_last_update = "unknown"
+        nearest_beach = "unknown"
+        nearest_dist_km = 0.0
+        water_quality = "unknown"
+        water_temp_official = 0.0
+        off_season = False
+        source = "internal_model"
+
+        if isinstance(jellyfish_data, dict):
+            source = "platgescat_api"
+            official_status = jellyfish_data.get("status_label") or jellyfish_data.get(
+                "front_medusa_label"
+            )
+            official_tag = jellyfish_data.get("status_tag") or jellyfish_data.get(
+                "front_medusa_tag"
+            )
+            species = jellyfish_data.get("species_list")
+            if isinstance(species, list):
+                official_species_count = len(species)
+            official_last_update = str(jellyfish_data.get("last_update") or "unknown")
+            nearest_beach = str(jellyfish_data.get("beach_name") or "unknown")
+            nearest_dist_km = _safe_float(jellyfish_data.get("distance_km"), 0.0)
+            water_quality = str(
+                jellyfish_data.get("water_quality")
+                or jellyfish_data.get("front_water_quality_tag")
+                or "unknown"
+            )
+            water_temp_official = _safe_float(
+                jellyfish_data.get("water_temp_c", jellyfish_data.get("front_water_temp")),
+                0.0,
+            )
+            off_season = bool(jellyfish_data.get("off_season"))
+
+        official_risk = _normalize_jellyfish_risk(
+            status_label=official_status if isinstance(official_status, str) else None,
+            status_tag=official_tag if isinstance(official_tag, str) else None,
+            off_season=off_season,
+        )
+        combined_risk = official_risk if official_risk != "unknown" else fallback_risk
+
+        return (
+            [
+                {
+                    "entity_id": "sensor.jellyfish_risk",
+                    "name": "Jellyfish risk",
+                    "value": combined_risk,
+                    "source": source,
+                },
+                {
+                    "entity_id": "sensor.jellyfish_official_risk",
+                    "name": "Jellyfish official risk",
+                    "value": official_risk,
+                    "source": source,
+                },
+                {
+                    "entity_id": "sensor.jellyfish_official_status",
+                    "name": "Jellyfish official status",
+                    "value": official_status or "unknown",
+                    "source": source,
+                },
+                {
+                    "entity_id": "sensor.jellyfish_species_count",
+                    "name": "Jellyfish species count",
+                    "value": official_species_count,
+                    "source": source,
+                },
+                {
+                    "entity_id": "sensor.jellyfish_last_update",
+                    "name": "Jellyfish last update",
+                    "value": official_last_update,
+                    "source": source,
+                },
+                {
+                    "entity_id": "sensor.jellyfish_nearest_beach",
+                    "name": "Nearest beach (PlatgesCat)",
+                    "value": nearest_beach,
+                    "source": source,
+                },
+                {
+                    "entity_id": "sensor.jellyfish_nearest_beach_distance",
+                    "name": "Nearest beach distance",
+                    "value": round(nearest_dist_km, 2),
+                    "unit": "km",
+                    "source": source,
+                },
+                {
+                    "entity_id": "sensor.beach_water_quality_official",
+                    "name": "Beach water quality (official)",
+                    "value": water_quality,
+                    "source": source,
+                },
+                {
+                    "entity_id": "sensor.beach_water_temperature_official",
+                    "name": "Beach water temperature (official)",
+                    "value": round(water_temp_official, 1),
+                    "unit": "degC",
+                    "source": source,
+                },
+            ],
+            combined_risk,
+        )
+
+    def _build_tiger_mosquito_metrics(
+        self,
+        *,
+        metrics: list[dict[str, Any]],
+        mosquito_data: dict[str, Any] | None,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Build tiger-mosquito metrics with observations + weather."""
+        values = {item.get("entity_id"): item.get("value") for item in metrics}
+        humidity = _safe_float(values.get("sensor.humidity"), 50.0)
+        rain_next_6h = _safe_float(values.get("sensor.rain_next_6h"), 20.0)
+        wind_speed = _safe_float(values.get("sensor.wind_speed"), 8.0)
+
+        weather_index = _mosquito_index_from_weather(humidity, rain_next_6h, wind_speed)
+        count_30d = 0
+        count_180d = 0
+        high_conf_pct = 0
+        confidence_avg_pct = 0
+        latest_report = "unknown"
+        latest_days_ago = 999
+        source = "internal_model"
+
+        if isinstance(mosquito_data, dict):
+            source = "mosquito_alert_api"
+            count_30d = _safe_int(mosquito_data.get("count_30d"), 0)
+            count_180d = _safe_int(mosquito_data.get("count_180d"), 0)
+            high_conf_pct = _safe_int(mosquito_data.get("high_confidence_pct"), 0)
+            confidence_avg_pct = _safe_int(mosquito_data.get("confidence_avg_pct"), 0)
+            latest_report = str(mosquito_data.get("latest_received_at") or "unknown")
+            latest_days_ago = _safe_int(mosquito_data.get("latest_days_ago"), 999)
+
+        observation_boost = min(count_30d * 4, 42) + min(count_180d, 30)
+        confidence_adjustment = int(round((high_conf_pct - 50) / 5))
+        mosquito_index = weather_index + observation_boost + confidence_adjustment
+        if latest_days_ago > 120:
+            mosquito_index = min(mosquito_index, 30)
+        elif latest_days_ago > 60:
+            mosquito_index = min(mosquito_index, 45)
+        elif latest_days_ago > 30:
+            mosquito_index = min(mosquito_index, 60)
+        mosquito_index = max(0, min(100, mosquito_index))
+        mosquito_risk = _mosquito_risk_from_index(mosquito_index)
+
+        return (
+            [
+                {
+                    "entity_id": "sensor.tiger_mosquito_risk",
+                    "name": "Tiger mosquito risk",
+                    "value": mosquito_risk,
+                    "source": source,
+                },
+                {
+                    "entity_id": "sensor.tiger_mosquito_index",
+                    "name": "Tiger mosquito index",
+                    "value": mosquito_index,
+                    "unit": "/100",
+                    "source": source,
+                },
+                {
+                    "entity_id": "sensor.mosquito_index",
+                    "name": "Mosquito index",
+                    "value": mosquito_index,
+                    "unit": "/100",
+                    "source": source,
+                },
+                {
+                    "entity_id": "sensor.tiger_mosquito_reports_30d",
+                    "name": "Tiger mosquito reports 30d",
+                    "value": count_30d,
+                    "source": source,
+                },
+                {
+                    "entity_id": "sensor.tiger_mosquito_reports_180d",
+                    "name": "Tiger mosquito reports 180d",
+                    "value": count_180d,
+                    "source": source,
+                },
+                {
+                    "entity_id": "sensor.tiger_mosquito_high_confidence",
+                    "name": "Tiger mosquito high confidence",
+                    "value": high_conf_pct,
+                    "unit": "%",
+                    "source": source,
+                },
+                {
+                    "entity_id": "sensor.tiger_mosquito_confidence_avg",
+                    "name": "Tiger mosquito confidence avg",
+                    "value": confidence_avg_pct,
+                    "unit": "%",
+                    "source": source,
+                },
+                {
+                    "entity_id": "sensor.tiger_mosquito_last_report",
+                    "name": "Tiger mosquito last report",
+                    "value": latest_report,
+                    "source": source,
+                },
+            ],
+            mosquito_index,
+        )
 
     def _select_hour_index(self, hourly: dict[str, Any]) -> int:
         """Pick index matching current local time or fallback to 0."""
@@ -896,6 +1522,8 @@ class AuraSnapshotProvider:
         weather_data: dict[str, Any] | None,
         marine_data: dict[str, Any] | None,
         air_data: dict[str, Any] | None,
+        mosquito_baseline_index: int,
+        jellyfish_baseline_risk: str,
     ) -> list[dict[str, Any]]:
         """Build 1..7 day forecast summary."""
         weather_daily = weather_data.get("daily", {}) if isinstance(weather_data, dict) else {}
@@ -999,6 +1627,20 @@ class AuraSnapshotProvider:
                 beach_score -= 1
             beach_score = max(0, min(10, beach_score))
 
+            mosquito_risk_est = _forecast_mosquito_risk(
+                baseline_index=mosquito_baseline_index,
+                temp_min=temp_min,
+                temp_max=temp_max,
+                rain_probability_max=rain_prob_max,
+                wind_max_kmh=wind_max,
+            )
+            jellyfish_risk_est = _forecast_jellyfish_risk(
+                baseline_risk=jellyfish_baseline_risk,
+                sea_temp_avg=sea_temp_avg,
+                wave_height_max=wave_height_max,
+                wind_max_kmh=wind_max,
+            )
+
             result.append(
                 {
                     "date": day,
@@ -1019,6 +1661,8 @@ class AuraSnapshotProvider:
                     "asthma_risk": asthma_risk,
                     "beach_flag": beach_flag,
                     "beach_score": beach_score,
+                    "mosquito_risk_est": mosquito_risk_est,
+                    "jellyfish_risk_est": jellyfish_risk_est,
                 }
             )
 
