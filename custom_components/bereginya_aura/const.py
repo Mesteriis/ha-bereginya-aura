@@ -1,7 +1,7 @@
 """Constants for the Beregynya AURA integration."""
 
 DOMAIN = "bereginya_aura"
-VERSION = "0.3.1"
+VERSION = "0.4.0"
 
 API_ENDPOINT = "/api/bereginya_aura/v1/snapshot"
 FRONTEND_STATIC_BASE = "/bereginya-aura"
@@ -18,6 +18,22 @@ CONF_FORECAST_DAYS = "forecast_days"
 CONF_TIMEZONES = "timezones"
 CONF_SOURCES = "sources"
 CONF_PERSONAS = "personas"
+CONF_DAILY_PLAN = "daily_plan"
+CONF_DALY_PLAN = "daly_plan"
+CONF_PLANNER_MODE = "planner_mode"
+
+PLANNER_MODE_NORMAL = "normal"
+PLANNER_MODE_CHILD = "child"
+PLANNER_MODE_ELDERLY = "elderly"
+PLANNER_MODE_SPORT = "sport"
+PLANNER_MODE_BEACH_DAY = "beach_day"
+SUPPORTED_PLANNER_MODES = {
+    PLANNER_MODE_NORMAL,
+    PLANNER_MODE_CHILD,
+    PLANNER_MODE_ELDERLY,
+    PLANNER_MODE_SPORT,
+    PLANNER_MODE_BEACH_DAY,
+}
 
 SOURCE_MODE_INTERNAL = "internal"
 SOURCE_MODE_HYBRID = "hybrid"
@@ -32,6 +48,8 @@ DEFAULT_SOURCE_MODE = SOURCE_MODE_INTERNAL
 DEFAULT_REFRESH_SECONDS = 900
 DEFAULT_FORECAST_DAYS = 7
 DEFAULT_TIMEZONES = ""
+DEFAULT_DAILY_PLAN = True
+DEFAULT_PLANNER_MODE = PLANNER_MODE_NORMAL
 
 SERVICE_REFRESH_SNAPSHOT = "refresh_snapshot"
 
@@ -144,4 +162,14 @@ SOURCE_KEY_ALIASES = {
     "hazard_top_event_icon_url": "sensor.hazard_top_event_icon_url",
     "hazard_last_update": "sensor.hazard_last_update",
     "hazard_source": "sensor.hazard_source",
+    "daily_plan_status": "sensor.aura_daily_plan_status",
+    "planner_mode": "sensor.aura_planner_mode_default",
+    "planner_mode_default": "sensor.aura_planner_mode_default",
+    "now_vs_3h_outdoor": "sensor.aura_now_vs_3h_outdoor",
+    "now_vs_3h_beach": "sensor.aura_now_vs_3h_beach",
+    "now_vs_3h_summary": "sensor.aura_now_vs_3h_summary",
+    "beach_pack_trigger": "sensor.aura_beach_pack_trigger",
+    "beach_pack_list": "sensor.aura_beach_pack_list",
+    "beach_notification_key": "sensor.aura_beach_notification_key",
+    "beach_notification_state": "sensor.aura_beach_notification_state",
 }

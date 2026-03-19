@@ -6,7 +6,7 @@
   "integration_type": "service",
   "iot_class": "local_polling",
   "dependencies": ["frontend"],
-  "version": "0.1.0",
+  "version": "0.4.0",
   "homeassistant": "2026.3.0",
   "issue_tracker": "https://github.com/Mesteriis/ha-bereginya-aura/issues"
 }

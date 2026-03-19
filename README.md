@@ -17,6 +17,8 @@ entities. It can optionally reuse selected HA entities in `hybrid` mode.
 - Calculates rip current risk from wave/period/wind/rain
 - Calculates heat stress index + wet-bulb estimate
 - Supports persona profiles from YAML (`skin_type`, `spf`, sensitivities) with per-person sunburn/heat sensors
+- Adds persona `daily_plan` with `planner_mode` (`normal`, `child`, `elderly`, `sport`, `beach_day`)
+- Adds smart planner sensors: best outdoor/beach hours, now-vs-2..3h trend, beach pack list and notification hints
 - Exposes icon catalog for all metrics in snapshot `meta.icons.entities`
 - Adds `icon_url` + `icon_gif_url` for each entity (GIF preferred support)
 - Supports extra timezone clocks via `timezones: "UTC+01,UTC+03,UTC-05"`
@@ -73,9 +75,15 @@ Response:
         "shade_factor": 1.0,
         "uv_sensitivity": 1.1,
         "heat_sensitivity": 1.0,
+        "planner_mode": "child",
         "enabled": true
       }
     ],
+    "daily_plan": {
+      "enabled": true,
+      "default_mode": "normal",
+      "comparison_hours": 3
+    },
     "fetch": {
       "weather": "ok",
       "marine": "ok",
@@ -162,23 +170,21 @@ bereginya_aura:
   refresh_seconds: 600
   forecast_days: 7
   timezones: "UTC+01,UTC+03,UTC-05"
+  daily_plan: true
+  planner_mode: normal
   personas:
-    - id: mama
-      name: Mama
-      person_entity_id: person.mama
+    - id: vem
+      name: VEM
+      person_entity_id: person.victoria_meshchryakovf
       skin_type: 2
+      planner_mode: normal
       spf: 30
-      shade_factor: 1.0
-      uv_sensitivity: 1.1
-      heat_sensitivity: 1.0
-    - id: papa
-      name: Papa
-      person_entity_id: person.papa
+    - id: avm
+      name: AVM
+      person_entity_id: person.aleksandr_meshcheriakov
       skin_type: 3
+      planner_mode: sport
       spf: 15
-      shade_factor: 1.0
-      uv_sensitivity: 1.0
-      heat_sensitivity: 1.15
   sources:
     precipitation_probability: sensor.precipitation_probability
     uv_index: sensor.uv_index
@@ -204,6 +210,13 @@ Personas options:
 - `shade_factor`: extra protection from shade/clothes (`1.0` default, `>1` more protection)
 - `uv_sensitivity`: UV sensitivity multiplier (`>1` burns faster, `<1` slower)
 - `heat_sensitivity`: heat stress multiplier (`>1` more sensitive)
+- `planner_mode`: `normal`, `child`, `elderly`, `sport`, `beach_day`
+
+Planner options:
+
+- `daily_plan`: enable planner logic (`true` by default)
+- `daly_plan`: alias of `daily_plan` (for backward typo compatibility)
+- `planner_mode`: global default mode for personas without own mode
 
 `skin_type` reference:
 

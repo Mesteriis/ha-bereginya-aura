@@ -17,14 +17,19 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.util import dt as dt_util
 
 from .const import (
+    CONF_DAILY_PLAN,
+    CONF_DALY_PLAN,
     CONF_FORECAST_DAYS,
+    CONF_PLANNER_MODE,
     CONF_REFRESH_SECONDS,
     CONF_SOURCE_MODE,
     CONF_SOURCES,
     CONF_TIMEZONES,
     CONF_PERSONAS,
+    DEFAULT_DAILY_PLAN,
     DEFAULT_TIMEZONES,
     DEFAULT_FORECAST_DAYS,
+    DEFAULT_PLANNER_MODE,
     DEFAULT_REFRESH_SECONDS,
     DEFAULT_SOURCE_MODE,
     INVALID_HA_STATES,
@@ -32,6 +37,7 @@ from .const import (
     SOURCE_MODE_HA_ONLY,
     SOURCE_MODE_HYBRID,
     SOURCE_MODE_INTERNAL,
+    SUPPORTED_PLANNER_MODES,
     SUPPORTED_SOURCE_MODES,
 )
 
@@ -160,6 +166,15 @@ _METRIC_ICON_EMOJI: dict[str, str] = {
     "sensor.hazard_top_event_icon_url": "1f6a8",
     "sensor.hazard_last_update": "1f6a8",
     "sensor.hazard_source": "1f6a8",
+    "sensor.aura_daily_plan_status": "1f4c5",
+    "sensor.aura_planner_mode_default": "1f4c5",
+    "sensor.aura_now_vs_3h_outdoor": "23f3",
+    "sensor.aura_now_vs_3h_beach": "1f30a",
+    "sensor.aura_now_vs_3h_summary": "1f5d2_fe0f",
+    "sensor.aura_beach_pack_trigger": "1f392",
+    "sensor.aura_beach_pack_list": "1f392",
+    "sensor.aura_beach_notification_key": "1f514",
+    "sensor.aura_beach_notification_state": "1f514",
 }
 _SKIN_TYPE_MED_J_M2: dict[int, int] = {
     1: 200,
@@ -208,13 +223,41 @@ def _normalize_persona_id(raw_value: Any, index: int) -> str:
     return normalized[:48]
 
 
+def _normalize_planner_mode(raw_value: Any) -> str:
+    """Normalize planner mode to one of supported values."""
+    mode = str(raw_value or DEFAULT_PLANNER_MODE).strip().lower()
+    if mode not in SUPPORTED_PLANNER_MODES:
+        return DEFAULT_PLANNER_MODE
+    return mode
+
+
+def _coerce_bool(raw_value: Any, default: bool) -> bool:
+    """Parse bool-like option values from YAML."""
+    if raw_value is None:
+        return default
+    if isinstance(raw_value, bool):
+        return raw_value
+    if isinstance(raw_value, str):
+        normalized = raw_value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+        return default
+    if isinstance(raw_value, (int, float)):
+        return raw_value != 0
+    return default
+
+
 def _clamp_float(value: Any, default: float, min_value: float, max_value: float) -> float:
     """Parse float and clamp to [min, max]."""
     parsed = _safe_float(value, default)
     return max(min_value, min(parsed, max_value))
 
 
-def _normalize_personas(raw_personas: Any) -> list[dict[str, Any]]:
+def _normalize_personas(
+    raw_personas: Any, *, default_planner_mode: str = DEFAULT_PLANNER_MODE
+) -> list[dict[str, Any]]:
     """Normalize personas from YAML into canonical list."""
     rows: list[dict[str, Any]] = []
     if isinstance(raw_personas, dict):
@@ -274,6 +317,9 @@ def _normalize_personas(raw_personas: Any) -> list[dict[str, Any]]:
                 "heat_sensitivity": _clamp_float(
                     row.get("heat_sensitivity", 1.0), 1.0, 0.6, 1.8
                 ),
+                "planner_mode": _normalize_planner_mode(
+                    row.get("planner_mode", default_planner_mode)
+                ),
                 "enabled": enabled,
             }
         )
@@ -329,7 +375,20 @@ def normalize_options(raw_options: dict[str, Any] | None) -> dict[str, Any]:
                 continue
             sources[key] = value
 
-    personas = _normalize_personas(options.get(CONF_PERSONAS, []))
+    planner_mode = _normalize_planner_mode(
+        options.get(CONF_PLANNER_MODE, DEFAULT_PLANNER_MODE)
+    )
+    daily_plan = _coerce_bool(
+        options.get(
+            CONF_DAILY_PLAN,
+            options.get(CONF_DALY_PLAN, DEFAULT_DAILY_PLAN),
+        ),
+        DEFAULT_DAILY_PLAN,
+    )
+    personas = _normalize_personas(
+        options.get(CONF_PERSONAS, []),
+        default_planner_mode=planner_mode,
+    )
 
     return {
         CONF_SOURCE_MODE: source_mode,
@@ -338,6 +397,8 @@ def normalize_options(raw_options: dict[str, Any] | None) -> dict[str, Any]:
         CONF_TIMEZONES: ",".join(normalized_timezones),
         CONF_SOURCES: sources,
         CONF_PERSONAS: personas,
+        CONF_DAILY_PLAN: daily_plan,
+        CONF_PLANNER_MODE: planner_mode,
     }
 
 
@@ -495,6 +556,19 @@ def _metric_emoji_code(entity_id: str, weather_code: int | None) -> str | None:
             return "1f31e"
         if entity_id.endswith("_heat_stress_index") or entity_id.endswith("_heat_stress_risk"):
             return "1f321_fe0f"
+        if (
+            entity_id.endswith("_daily_plan")
+            or entity_id.endswith("_planner_mode")
+            or entity_id.endswith("_best_hours_outdoor")
+            or entity_id.endswith("_best_hours_beach")
+        ):
+            return "1f4c5"
+        if entity_id.endswith("_pack_list"):
+            return "1f392"
+        if entity_id.endswith("_smart_notification"):
+            return "1f514"
+        if entity_id.endswith("_now_vs_3h"):
+            return "23f3"
         if entity_id.endswith("_presence") or entity_id.endswith("_profile"):
             return "1f9d1"
     return _METRIC_ICON_EMOJI.get(entity_id)
@@ -1129,6 +1203,21 @@ class AuraSnapshotProvider:
             jellyfish_baseline_risk=jellyfish_risk_for_forecast,
             tick_baseline_index=tick_index_for_forecast,
         )
+        daily_planner_metrics, planner_payload = self._build_daily_planner_metrics(
+            metrics=metrics,
+            weather_data=weather_data,
+            marine_data=marine_data,
+            air_data=air_data,
+            personas=self._options.get(CONF_PERSONAS, []),
+            daily_plan_enabled=_coerce_bool(
+                self._options.get(CONF_DAILY_PLAN, DEFAULT_DAILY_PLAN),
+                DEFAULT_DAILY_PLAN,
+            ),
+            default_planner_mode=_normalize_planner_mode(
+                self._options.get(CONF_PLANNER_MODE, DEFAULT_PLANNER_MODE)
+            ),
+        )
+        metrics.extend(daily_planner_metrics)
         overrides = self._apply_ha_sources(metrics)
         self._decorate_entity_icons(metrics)
         self._decorate_forecast_icons(forecast_daily)
@@ -1161,6 +1250,7 @@ class AuraSnapshotProvider:
                         "shade_factor": persona.get("shade_factor"),
                         "uv_sensitivity": persona.get("uv_sensitivity"),
                         "heat_sensitivity": persona.get("heat_sensitivity"),
+                        "planner_mode": persona.get("planner_mode"),
                         "enabled": persona.get("enabled", True),
                     }
                 )
@@ -1191,6 +1281,8 @@ class AuraSnapshotProvider:
                 },
                 "icons": icon_catalog,
                 "personas": personas_meta,
+                "daily_plan": planner_payload,
+                "daly_plan": planner_payload,
                 "ha_overrides": overrides,
                 "forecast_count": len(forecast_daily),
             },
@@ -2861,6 +2953,685 @@ class AuraSnapshotProvider:
 
         return result
 
+    def _build_daily_planner_metrics(
+        self,
+        *,
+        metrics: list[dict[str, Any]],
+        weather_data: dict[str, Any] | None,
+        marine_data: dict[str, Any] | None,
+        air_data: dict[str, Any] | None,
+        personas: Any,
+        daily_plan_enabled: bool,
+        default_planner_mode: str,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """Build daily planner + smart notification hints."""
+        values = {item.get("entity_id"): item.get("value") for item in metrics}
+        planner_mode_default = _normalize_planner_mode(default_planner_mode)
+
+        mode_profiles: dict[str, dict[str, float]] = {
+            "normal": {
+                "uv_limit": 6.0,
+                "heat_limit": 31.0,
+                "outdoor_threshold": 65.0,
+                "beach_threshold": 68.0,
+            },
+            "child": {
+                "uv_limit": 3.5,
+                "heat_limit": 28.5,
+                "outdoor_threshold": 72.0,
+                "beach_threshold": 74.0,
+            },
+            "elderly": {
+                "uv_limit": 5.0,
+                "heat_limit": 28.0,
+                "outdoor_threshold": 70.0,
+                "beach_threshold": 72.0,
+            },
+            "sport": {
+                "uv_limit": 7.0,
+                "heat_limit": 33.0,
+                "outdoor_threshold": 62.0,
+                "beach_threshold": 66.0,
+            },
+            "beach_day": {
+                "uv_limit": 6.5,
+                "heat_limit": 32.0,
+                "outdoor_threshold": 60.0,
+                "beach_threshold": 64.0,
+            },
+        }
+        comparison_hours = 3
+        jellyfish_baseline = str(values.get("sensor.jellyfish_risk") or "").strip().lower()
+        rip_index = _optional_int(values.get("sensor.rip_current_index"))
+        base_jellyfish_penalty = {
+            "very_high": 18.0,
+            "high": 12.0,
+            "moderate": 6.0,
+            "low": 2.0,
+            "very_low": 1.0,
+            "off_season": 0.0,
+        }.get(jellyfish_baseline, 3.0)
+
+        weather_hourly = weather_data.get("hourly", {}) if isinstance(weather_data, dict) else {}
+        marine_hourly = marine_data.get("hourly", {}) if isinstance(marine_data, dict) else {}
+        air_hourly = air_data.get("hourly", {}) if isinstance(air_data, dict) else {}
+
+        weather_times = weather_hourly.get("time")
+        hourly_rows: list[dict[str, Any]] = []
+        if isinstance(weather_times, list) and weather_times:
+            tz = dt_util.get_time_zone(self.hass.config.time_zone) or UTC
+            start_idx = self._select_hour_index(weather_hourly)
+            end_idx = min(len(weather_times), start_idx + 24)
+            for idx in range(start_idx, end_idx):
+                raw_time = weather_times[idx]
+                if not isinstance(raw_time, str):
+                    continue
+                parsed = dt_util.parse_datetime(raw_time)
+                if parsed is None:
+                    continue
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=tz)
+                local_dt = parsed.astimezone(tz)
+                hourly_rows.append(
+                    {
+                        "label": local_dt.strftime("%m-%d %H:00"),
+                        "uv": _optional_float(_hourly_value(weather_hourly, "uv_index", idx, None)),
+                        "apparent_temp": _optional_float(
+                            _hourly_value(weather_hourly, "apparent_temperature", idx, None)
+                        ),
+                        "rain_prob": _optional_float(
+                            _hourly_value(weather_hourly, "precipitation_probability", idx, None)
+                        ),
+                        "wind": _optional_float(
+                            _hourly_value(weather_hourly, "wind_speed_10m", idx, None)
+                        ),
+                        "aqi": _optional_float(
+                            _hourly_value(air_hourly, "european_aqi", idx, None)
+                        ),
+                        "sea_temp": _optional_float(
+                            _hourly_value(marine_hourly, "sea_surface_temperature", idx, None)
+                        ),
+                        "wave_height": _optional_float(
+                            _hourly_value(marine_hourly, "wave_height", idx, None)
+                        ),
+                    }
+                )
+
+        personas_rows: list[dict[str, Any]] = []
+        if isinstance(personas, list):
+            personas_rows = [
+                row
+                for row in personas
+                if isinstance(row, dict)
+                and row.get("enabled") is not False
+                and str(row.get("id") or "").strip()
+            ]
+
+        def planner_metric(
+            entity_id: str,
+            name: str,
+            value: Any,
+            *,
+            icon: str | None = None,
+            source_entity: str | None = None,
+            extras: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            item: dict[str, Any] = {
+                "entity_id": entity_id,
+                "name": name,
+                "value": "unavailable" if value is None else value,
+                "source": "internal_planner",
+            }
+            if icon is not None:
+                item["icon"] = icon
+            if source_entity:
+                item["source_entity"] = source_entity
+            if isinstance(extras, dict):
+                item.update(extras)
+            return item
+
+        def score_outdoor(
+            row: dict[str, Any],
+            *,
+            mode: str,
+            skin_type: int,
+            uv_sensitivity: float,
+            heat_sensitivity: float,
+        ) -> int:
+            profile = mode_profiles.get(mode, mode_profiles["normal"])
+            score = 100.0
+
+            uv = _optional_float(row.get("uv"))
+            if uv is None:
+                score -= 8.0
+            else:
+                uv_limit = profile["uv_limit"] + (skin_type - 3) * 0.35
+                score -= max(0.0, uv - uv_limit) * 14.0 * uv_sensitivity
+
+            apparent_temp = _optional_float(row.get("apparent_temp"))
+            if apparent_temp is None:
+                score -= 5.0
+            else:
+                score -= max(0.0, apparent_temp - profile["heat_limit"]) * 4.2 * heat_sensitivity
+
+            rain_prob = _optional_float(row.get("rain_prob"))
+            if rain_prob is not None:
+                score -= max(0.0, rain_prob - 10.0) * 0.55
+
+            wind = _optional_float(row.get("wind"))
+            if wind is not None and wind > 15.0:
+                score -= (wind - 15.0) * 1.1
+
+            aqi = _optional_float(row.get("aqi"))
+            if aqi is not None and aqi > 35.0:
+                score -= (aqi - 35.0) * 0.45
+
+            return max(0, min(100, int(round(score))))
+
+        def score_beach(
+            row: dict[str, Any],
+            *,
+            mode: str,
+            skin_type: int,
+            uv_sensitivity: float,
+            heat_sensitivity: float,
+        ) -> int:
+            score = float(
+                score_outdoor(
+                    row,
+                    mode=mode,
+                    skin_type=skin_type,
+                    uv_sensitivity=uv_sensitivity,
+                    heat_sensitivity=heat_sensitivity,
+                )
+            )
+
+            sea_temp = _optional_float(row.get("sea_temp"))
+            if sea_temp is None:
+                score -= 12.0
+            elif sea_temp < 19.0:
+                score -= 35.0
+            elif sea_temp < 21.0:
+                score -= 16.0
+            elif sea_temp >= 24.0:
+                score += 5.0
+
+            wave_height = _optional_float(row.get("wave_height"))
+            if wave_height is None:
+                score -= 8.0
+            elif wave_height > 2.2:
+                score -= 36.0
+            elif wave_height > 1.5:
+                score -= 22.0
+            elif wave_height > 1.1:
+                score -= 12.0
+
+            if rip_index is not None:
+                score -= rip_index * 0.12
+            score -= base_jellyfish_penalty
+
+            return max(0, min(100, int(round(score))))
+
+        def trend_label(now_score: int | None, future_score: int | None) -> str:
+            if now_score is None or future_score is None:
+                return "unavailable"
+            delta = future_score - now_score
+            if delta >= 8:
+                return "better_in_3h"
+            if delta <= -8:
+                return "better_now"
+            return "stable"
+
+        def best_hours(
+            rows: list[dict[str, Any]],
+            scores: list[int],
+            threshold: float,
+        ) -> str:
+            accepted = [
+                rows[idx]["label"]
+                for idx, score in enumerate(scores)
+                if idx < len(rows) and score >= threshold
+            ]
+            if not accepted:
+                return "none"
+            if len(accepted) > 8:
+                return ", ".join(accepted[:8]) + ", ..."
+            return ", ".join(accepted)
+
+        def pack_list_for_mode(
+            *,
+            mode: str,
+            sea_temp_now: float | None,
+            rain_now: float | None,
+            uv_now: float | None,
+            trend_outdoor: str,
+        ) -> str:
+            items = [
+                "water",
+                "towel",
+                "sunscreen SPF50+",
+                "hat",
+                "sunglasses",
+            ]
+            if mode == "child":
+                items.extend(["UV shirt", "spare clothes", "kids snack"])
+            elif mode == "elderly":
+                items.extend(["electrolytes", "light chair", "medication kit"])
+            elif mode == "sport":
+                items.extend(["electrolytes", "sports bottle", "energy snack"])
+            elif mode == "beach_day":
+                items.extend(["umbrella", "beach mat", "snorkel mask"])
+
+            if sea_temp_now is not None and sea_temp_now < 21.0:
+                items.append("light hoodie")
+            if rain_now is not None and rain_now >= 35.0:
+                items.append("light rain jacket")
+            if uv_now is not None and uv_now >= 6.0:
+                items.append("after-sun gel")
+            if jellyfish_baseline in {"high", "very_high"}:
+                items.append("anti-sting kit")
+            if trend_outdoor == "better_in_3h":
+                items.append("option to start 2-3h later")
+
+            unique_items: list[str] = []
+            seen: set[str] = set()
+            for item in items:
+                key = item.lower().strip()
+                if key in seen:
+                    continue
+                seen.add(key)
+                unique_items.append(item)
+            return ", ".join(unique_items)
+
+        sea_temp_official = _optional_float(values.get("sensor.beach_water_temperature_official"))
+        sea_temp_model = _optional_float(values.get("sensor.sea_temperature_openmeteo"))
+        sea_temp_now = sea_temp_official if sea_temp_official is not None else sea_temp_model
+        rain_now = _optional_float(hourly_rows[0].get("rain_prob")) if hourly_rows else None
+        uv_now = _optional_float(hourly_rows[0].get("uv")) if hourly_rows else None
+
+        default_outdoor_scores: list[int] = []
+        default_beach_scores: list[int] = []
+        for row in hourly_rows:
+            default_outdoor_scores.append(
+                score_outdoor(
+                    row,
+                    mode=planner_mode_default,
+                    skin_type=3,
+                    uv_sensitivity=1.0,
+                    heat_sensitivity=1.0,
+                )
+            )
+            default_beach_scores.append(
+                score_beach(
+                    row,
+                    mode=planner_mode_default,
+                    skin_type=3,
+                    uv_sensitivity=1.0,
+                    heat_sensitivity=1.0,
+                )
+            )
+
+        comparison_index: int | None = None
+        if len(hourly_rows) > 3:
+            comparison_index = 3
+        elif len(hourly_rows) > 2:
+            comparison_index = 2
+
+        outdoor_now = default_outdoor_scores[0] if default_outdoor_scores else None
+        outdoor_future = (
+            default_outdoor_scores[comparison_index]
+            if comparison_index is not None and comparison_index < len(default_outdoor_scores)
+            else None
+        )
+        beach_now = default_beach_scores[0] if default_beach_scores else None
+        beach_future = (
+            default_beach_scores[comparison_index]
+            if comparison_index is not None and comparison_index < len(default_beach_scores)
+            else None
+        )
+        outdoor_trend = trend_label(outdoor_now, outdoor_future)
+        beach_trend = trend_label(beach_now, beach_future)
+        outdoor_summary = (
+            f"{outdoor_now}->{outdoor_future}"
+            if outdoor_now is not None and outdoor_future is not None
+            else "unavailable"
+        )
+        beach_summary = (
+            f"{beach_now}->{beach_future}"
+            if beach_now is not None and beach_future is not None
+            else "unavailable"
+        )
+        now_vs_summary = f"outdoor:{outdoor_summary}, beach:{beach_summary}"
+
+        beach_recommendation = str(values.get("sensor.beach_recommendation") or "").strip().lower()
+        beach_flag = str(values.get("sensor.beach_flag_calculated") or "").strip().lower()
+        has_beach_premise = (
+            sea_temp_now is not None
+            and sea_temp_now >= 19.0
+            and beach_flag != "red"
+            and (
+                beach_recommendation == "recommended"
+                or (beach_now is not None and beach_now >= 68)
+            )
+        )
+
+        walking_tokens = ("walking", "on_foot", "walk", "foot", "пеш", "топ")
+        is_walking = False
+        for persona in personas_rows:
+            person_entity_id = persona.get("person_entity_id")
+            if not isinstance(person_entity_id, str) or not person_entity_id.strip():
+                continue
+            state = self.hass.states.get(person_entity_id.strip())
+            if state is None:
+                continue
+            value = str(state.state or "").strip().lower()
+            if not value:
+                continue
+            if any(token in value for token in walking_tokens):
+                is_walking = True
+                break
+            if value not in {"home", "unknown", "unavailable", "none"}:
+                is_walking = True
+
+        beach_pack_trigger = "not_ready"
+        if not daily_plan_enabled:
+            beach_pack_trigger = "disabled"
+        elif is_walking and has_beach_premise:
+            beach_pack_trigger = "ready"
+        global_pack_list = pack_list_for_mode(
+            mode=planner_mode_default,
+            sea_temp_now=sea_temp_now,
+            rain_now=rain_now,
+            uv_now=uv_now,
+            trend_outdoor=outdoor_trend,
+        )
+        global_notification_state = "notify" if beach_pack_trigger == "ready" else "idle"
+        global_notification_key = "aura_beach_pack_plan"
+
+        result: list[dict[str, Any]] = [
+            planner_metric(
+                "sensor.aura_daily_plan_status",
+                "AURA daily plan status",
+                "enabled" if daily_plan_enabled else "disabled",
+                icon="mdi:calendar-check",
+            ),
+            planner_metric(
+                "sensor.aura_planner_mode_default",
+                "AURA planner mode (default)",
+                planner_mode_default,
+                icon="mdi:calendar-clock",
+            ),
+            planner_metric(
+                "sensor.aura_now_vs_3h_outdoor",
+                "AURA outdoor now vs +2..3h",
+                outdoor_trend if daily_plan_enabled else "disabled",
+                icon="mdi:walk",
+            ),
+            planner_metric(
+                "sensor.aura_now_vs_3h_beach",
+                "AURA beach now vs +2..3h",
+                beach_trend if daily_plan_enabled else "disabled",
+                icon="mdi:beach",
+            ),
+            planner_metric(
+                "sensor.aura_now_vs_3h_summary",
+                "AURA now vs +2..3h summary",
+                now_vs_summary if daily_plan_enabled else "daily_plan_disabled",
+                icon="mdi:timeline-clock-outline",
+            ),
+            planner_metric(
+                "sensor.aura_beach_pack_trigger",
+                "AURA beach pack trigger",
+                beach_pack_trigger,
+                icon="mdi:bag-suitcase-outline",
+            ),
+            planner_metric(
+                "sensor.aura_beach_pack_list",
+                "AURA beach pack list",
+                global_pack_list if daily_plan_enabled else "daily_plan_disabled",
+                icon="mdi:bag-personal",
+            ),
+            planner_metric(
+                "sensor.aura_beach_notification_key",
+                "AURA beach notification key",
+                global_notification_key,
+                icon="mdi:key-outline",
+            ),
+            planner_metric(
+                "sensor.aura_beach_notification_state",
+                "AURA beach notification state",
+                global_notification_state,
+                icon="mdi:bell-ring-outline",
+                extras={
+                    "notification_key": global_notification_key,
+                    "notification_family": "ai_foundation",
+                    "notification_scope": "outdoor",
+                    "notification_message_ru": (
+                        "Пляжный сбор активирован: условия подходят."
+                        if global_notification_state == "notify"
+                        else "Пляжный сбор не требуется."
+                    ),
+                    "notification_message_en": (
+                        "Beach pack plan is active: conditions look good."
+                        if global_notification_state == "notify"
+                        else "Beach pack plan is idle."
+                    ),
+                },
+            ),
+        ]
+
+        planner_payload: dict[str, Any] = {
+            "enabled": daily_plan_enabled,
+            "default_mode": planner_mode_default,
+            "comparison_hours": comparison_hours,
+            "now_vs_3h": {
+                "outdoor": outdoor_trend if daily_plan_enabled else "disabled",
+                "beach": beach_trend if daily_plan_enabled else "disabled",
+                "outdoor_scores": {
+                    "now": outdoor_now,
+                    "future": outdoor_future,
+                },
+                "beach_scores": {
+                    "now": beach_now,
+                    "future": beach_future,
+                },
+                "summary": now_vs_summary,
+            },
+            "beach_pack": {
+                "trigger": beach_pack_trigger,
+                "is_walking": is_walking,
+                "sea_temp_now": sea_temp_now,
+                "list": global_pack_list,
+                "notification_key": global_notification_key,
+                "notification_state": global_notification_state,
+            },
+            "personas": [],
+        }
+
+        for persona in personas_rows:
+            persona_id = str(persona.get("id") or "").strip()
+            if not persona_id:
+                continue
+            persona_name = str(persona.get("name") or persona_id).strip() or persona_id
+            person_entity_id = persona.get("person_entity_id")
+            if not isinstance(person_entity_id, str) or not person_entity_id.strip():
+                person_entity_id = None
+            else:
+                person_entity_id = person_entity_id.strip()
+            mode = _normalize_planner_mode(persona.get("planner_mode", planner_mode_default))
+            skin_type = _safe_int(persona.get("skin_type"), 3)
+            if skin_type < 1:
+                skin_type = 1
+            if skin_type > 6:
+                skin_type = 6
+            uv_sensitivity = _clamp_float(persona.get("uv_sensitivity", 1.0), 1.0, 0.5, 2.5)
+            heat_sensitivity = _clamp_float(
+                persona.get("heat_sensitivity", 1.0), 1.0, 0.6, 1.8
+            )
+
+            outdoor_scores: list[int] = []
+            beach_scores: list[int] = []
+            for row in hourly_rows:
+                outdoor_scores.append(
+                    score_outdoor(
+                        row,
+                        mode=mode,
+                        skin_type=skin_type,
+                        uv_sensitivity=uv_sensitivity,
+                        heat_sensitivity=heat_sensitivity,
+                    )
+                )
+                beach_scores.append(
+                    score_beach(
+                        row,
+                        mode=mode,
+                        skin_type=skin_type,
+                        uv_sensitivity=uv_sensitivity,
+                        heat_sensitivity=heat_sensitivity,
+                    )
+                )
+
+            profile = mode_profiles.get(mode, mode_profiles["normal"])
+            best_outdoor = (
+                best_hours(hourly_rows, outdoor_scores, profile["outdoor_threshold"])
+                if daily_plan_enabled and outdoor_scores
+                else "unavailable"
+            )
+            best_beach = (
+                best_hours(hourly_rows, beach_scores, profile["beach_threshold"])
+                if daily_plan_enabled and beach_scores
+                else "unavailable"
+            )
+
+            persona_outdoor_now = outdoor_scores[0] if outdoor_scores else None
+            persona_outdoor_future = (
+                outdoor_scores[comparison_index]
+                if comparison_index is not None and comparison_index < len(outdoor_scores)
+                else None
+            )
+            persona_beach_now = beach_scores[0] if beach_scores else None
+            persona_beach_future = (
+                beach_scores[comparison_index]
+                if comparison_index is not None and comparison_index < len(beach_scores)
+                else None
+            )
+            persona_now_vs = trend_label(persona_outdoor_now, persona_outdoor_future)
+            persona_pack_ready = (
+                daily_plan_enabled
+                and beach_pack_trigger == "ready"
+                and best_beach not in {"none", "unavailable"}
+            )
+            persona_pack_list = pack_list_for_mode(
+                mode=mode,
+                sea_temp_now=sea_temp_now,
+                rain_now=rain_now,
+                uv_now=uv_now,
+                trend_outdoor=persona_now_vs,
+            )
+            persona_notification_state = "notify" if persona_pack_ready else "idle"
+            persona_notification_key = f"aura_{persona_id}_beach_pack_plan"
+            persona_daily_plan = (
+                f"mode={mode}; outdoor={best_outdoor}; beach={best_beach}; now_vs_3h={persona_now_vs}"
+                if daily_plan_enabled
+                else "daily_plan_disabled"
+            )
+
+            persona_prefix = f"sensor.aura_{persona_id}"
+            result.extend(
+                [
+                    planner_metric(
+                        f"{persona_prefix}_planner_mode",
+                        f"{persona_name} planner mode",
+                        mode,
+                        icon="mdi:calendar-clock",
+                        source_entity=person_entity_id,
+                    ),
+                    planner_metric(
+                        f"{persona_prefix}_best_hours_outdoor",
+                        f"{persona_name} best outdoor hours",
+                        best_outdoor,
+                        icon="mdi:walk",
+                        source_entity=person_entity_id,
+                    ),
+                    planner_metric(
+                        f"{persona_prefix}_best_hours_beach",
+                        f"{persona_name} best beach hours",
+                        best_beach,
+                        icon="mdi:beach",
+                        source_entity=person_entity_id,
+                    ),
+                    planner_metric(
+                        f"{persona_prefix}_now_vs_3h",
+                        f"{persona_name} now vs +2..3h",
+                        persona_now_vs if daily_plan_enabled else "disabled",
+                        icon="mdi:timeline-clock-outline",
+                        source_entity=person_entity_id,
+                    ),
+                    planner_metric(
+                        f"{persona_prefix}_daily_plan",
+                        f"{persona_name} daily plan",
+                        persona_daily_plan,
+                        icon="mdi:calendar-text",
+                        source_entity=person_entity_id,
+                    ),
+                    planner_metric(
+                        f"{persona_prefix}_pack_list",
+                        f"{persona_name} beach pack list",
+                        persona_pack_list if daily_plan_enabled else "daily_plan_disabled",
+                        icon="mdi:bag-personal",
+                        source_entity=person_entity_id,
+                    ),
+                    planner_metric(
+                        f"{persona_prefix}_smart_notification",
+                        f"{persona_name} smart notification",
+                        persona_notification_state,
+                        icon="mdi:bell-ring-outline",
+                        source_entity=person_entity_id,
+                        extras={
+                            "notification_key": persona_notification_key,
+                            "notification_family": "ai_foundation",
+                            "notification_scope": "outdoor",
+                            "notification_message_ru": (
+                                f"{persona_name}: собраться на пляж, окно {best_beach}."
+                                if persona_notification_state == "notify"
+                                else f"{persona_name}: уведомление не требуется."
+                            ),
+                            "notification_message_en": (
+                                f"{persona_name}: beach packing is recommended ({best_beach})."
+                                if persona_notification_state == "notify"
+                                else f"{persona_name}: notification is idle."
+                            ),
+                        },
+                    ),
+                ]
+            )
+
+            planner_payload["personas"].append(
+                {
+                    "id": persona_id,
+                    "name": persona_name,
+                    "mode": mode,
+                    "best_hours_outdoor": best_outdoor,
+                    "best_hours_beach": best_beach,
+                    "now_vs_3h": persona_now_vs if daily_plan_enabled else "disabled",
+                    "outdoor_scores": {
+                        "now": persona_outdoor_now,
+                        "future": persona_outdoor_future,
+                    },
+                    "beach_scores": {
+                        "now": persona_beach_now,
+                        "future": persona_beach_future,
+                    },
+                    "pack_trigger": "ready" if persona_pack_ready else "idle",
+                    "pack_list": persona_pack_list,
+                    "notification_key": persona_notification_key,
+                    "notification_state": persona_notification_state,
+                    "person_entity_id": person_entity_id,
+                }
+            )
+
+        return result, planner_payload
+
     def _select_hour_index(self, hourly: dict[str, Any]) -> int:
         """Pick index matching current local time or return 0."""
         times = hourly.get("time")
@@ -3482,6 +4253,8 @@ class AuraSnapshotProvider:
                 "earthquakes": _noto_icon_bundle("1f30b"),
                 "wildfire": _noto_icon_bundle("1f525"),
                 "hazards": _noto_icon_bundle("1f6a8"),
+                "planner": _noto_icon_bundle("1f4c5"),
+                "notifications": _noto_icon_bundle("1f514"),
             },
             "entities": entity_icons,
         }
