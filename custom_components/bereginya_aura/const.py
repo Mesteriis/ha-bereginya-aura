@@ -1,7 +1,7 @@
 """Constants for the Beregynya AURA integration."""
 
 DOMAIN = "bereginya_aura"
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 
 API_ENDPOINT = "/api/bereginya_aura/v1/snapshot"
 FRONTEND_STATIC_BASE = "/bereginya-aura"
@@ -175,6 +175,11 @@ SOURCE_KEY_ALIASES = {
     "beach_pack_list": "sensor.aura_beach_pack_list",
     "beach_notification_key": "sensor.aura_beach_notification_key",
     "beach_notification_state": "sensor.aura_beach_notification_state",
+    "astro_solar_elevation": "sensor.astro_solar_elevation",
+    "astro_uv_index_now": "sensor.astro_uv_index_now",
+    "astro_uv_index_3h_max": "sensor.astro_uv_index_3h_max",
+    "astro_uv_risk_3h": "sensor.astro_uv_risk_3h",
+    "astro_uv_now_vs_3h": "sensor.astro_uv_now_vs_3h",
     "uv_dose_sed_1h": "sensor.uv_dose_sed_1h",
     "uv_dose_sed_today_est": "sensor.uv_dose_sed_today_est",
     "uv_dose_status": "sensor.uv_dose_status",
@@ -194,10 +199,14 @@ SOURCE_KEY_ALIASES = {
     "algae_bloom_risk": "sensor.algae_bloom_risk",
     "algae_bloom_index": "sensor.algae_bloom_index",
     "algae_bloom_signal": "sensor.algae_bloom_signal",
+    "algae_chlorophyll_mg_m3": "sensor.algae_chlorophyll_mg_m3",
     "algae_source": "sensor.algae_source",
     "smoke_transport_risk": "sensor.smoke_transport_risk",
     "smoke_transport_index": "sensor.smoke_transport_index",
     "smoke_transport_signal": "sensor.smoke_transport_signal",
+    "smoke_cams_bbaod550": "sensor.smoke_cams_bbaod550",
+    "smoke_cams_pm25": "sensor.smoke_cams_pm25",
+    "smoke_cams_fire_frp": "sensor.smoke_cams_fire_frp",
     "smoke_source": "sensor.smoke_source",
     "cap_alert_risk": "sensor.cap_alert_risk",
     "cap_alert_index": "sensor.cap_alert_index",

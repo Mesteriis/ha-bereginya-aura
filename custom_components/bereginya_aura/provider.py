@@ -62,6 +62,13 @@ _INAT_TICKS_TAXON_ID = 51672
 _USGS_EQ_QUERY = "https://earthquake.usgs.gov/fdsnws/event/1/query"
 _GDACS_RSS = "https://www.gdacs.org/xml/rss.xml"
 _METEOALARM_ATOM_SPAIN = "https://feeds.meteoalarm.org/feeds/meteoalarm-legacy-atom-spain"
+_ECMWF_CAMS_WMS = "https://eccharts.ecmwf.int/wms/"
+_CMEMS_WMTS = "https://wmts.marine.copernicus.eu/teroWmts"
+_CMEMS_ALGAE_LAYER = (
+    "OCEANCOLOUR_GLO_BGC_L4_MY_009_108/"
+    "c3s_obs-oc_glo_bgc-plankton_my_l4-multi-4km_P1M_202207/CHL"
+)
+_CMEMS_ALGAE_STYLE = "cmap:algae"
 _UTC_TOKEN_PATTERN = re.compile(r"^UTC([+-])(\d{1,2})$")
 _NOTO_EMOJI_BASE = "https://fonts.gstatic.com/s/e/notoemoji/latest"
 
@@ -179,6 +186,11 @@ _METRIC_ICON_EMOJI: dict[str, str] = {
     "sensor.aura_beach_pack_list": "1f392",
     "sensor.aura_beach_notification_key": "1f514",
     "sensor.aura_beach_notification_state": "1f514",
+    "sensor.astro_solar_elevation": "1f31e",
+    "sensor.astro_uv_index_now": "1f31e",
+    "sensor.astro_uv_index_3h_max": "1f31e",
+    "sensor.astro_uv_risk_3h": "1f6a8",
+    "sensor.astro_uv_now_vs_3h": "23f3",
     "sensor.uv_dose_sed_1h": "1f31e",
     "sensor.uv_dose_sed_today_est": "1f31e",
     "sensor.uv_dose_status": "1f31e",
@@ -198,10 +210,14 @@ _METRIC_ICON_EMOJI: dict[str, str] = {
     "sensor.algae_bloom_risk": "1f9ab",
     "sensor.algae_bloom_index": "1f9ab",
     "sensor.algae_bloom_signal": "1f9ab",
+    "sensor.algae_chlorophyll_mg_m3": "1f9ab",
     "sensor.algae_source": "1f9ab",
     "sensor.smoke_transport_risk": "1f32b_fe0f",
     "sensor.smoke_transport_index": "1f32b_fe0f",
     "sensor.smoke_transport_signal": "1f32b_fe0f",
+    "sensor.smoke_cams_bbaod550": "1f32b_fe0f",
+    "sensor.smoke_cams_pm25": "1f32b_fe0f",
+    "sensor.smoke_cams_fire_frp": "1f525",
     "sensor.smoke_source": "1f32b_fe0f",
     "sensor.cap_alert_risk": "1f6a8",
     "sensor.cap_alert_index": "1f6a8",
@@ -225,6 +241,10 @@ _SKIN_TYPE_MED_J_M2: dict[int, int] = {
 }
 _PERSONA_ID_PATTERN = re.compile(r"[^a-z0-9_]+")
 _TRACKING_ID_PATTERN = re.compile(r"[^a-z0-9_]+")
+_CAMS_VALUE_PATTERN = re.compile(
+    r"^Value:\s*([-+]?\d+(?:\.\d+)?)\s*(.*)$",
+    re.MULTILINE,
+)
 
 
 def _normalize_timezone_token(raw_token: str) -> str | None:
@@ -758,6 +778,169 @@ def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return 6371.0 * (2 * math.atan2(math.sqrt(a), math.sqrt(max(0.0, 1.0 - a))))
 
 
+def _parse_cams_featureinfo_text(text: str) -> dict[str, Any] | None:
+    """Parse CAMS WMS GetFeatureInfo text/plain payload."""
+    if not isinstance(text, str) or not text.strip():
+        return None
+
+    line_match = _CAMS_VALUE_PATTERN.search(text)
+    value: float | None = None
+    unit = ""
+    if line_match is not None:
+        value = _optional_float(line_match.group(1))
+        unit = str(line_match.group(2) or "").strip() or ""
+
+    name_match = re.search(r"^Name:\s*(.+)$", text, re.MULTILINE)
+    title_match = re.search(r"^Title:\s*(.+)$", text, re.MULTILINE)
+    dist_match = re.search(r"^Distance:\s*([-+]?\d+(?:\.\d+)?)\s*km", text, re.MULTILINE)
+    grid_lat_match = re.search(
+        r"^Grid point latitude:\s*([-+]?\d+(?:\.\d+)?)\s*$",
+        text,
+        re.MULTILINE,
+    )
+    grid_lon_match = re.search(
+        r"^Grid point longitude:\s*([-+]?\d+(?:\.\d+)?)\s*$",
+        text,
+        re.MULTILINE,
+    )
+
+    return {
+        "name": str(name_match.group(1)).strip() if name_match is not None else "",
+        "title": str(title_match.group(1)).strip() if title_match is not None else "",
+        "value": value,
+        "unit": unit,
+        "distance_km": (
+            _optional_float(dist_match.group(1), 3) if dist_match is not None else None
+        ),
+        "grid_lat": (
+            _optional_float(grid_lat_match.group(1), 5)
+            if grid_lat_match is not None
+            else None
+        ),
+        "grid_lon": (
+            _optional_float(grid_lon_match.group(1), 5)
+            if grid_lon_match is not None
+            else None
+        ),
+        "raw": text.strip(),
+    }
+
+
+def _parse_hourly_time(raw_time: Any, tz: Any) -> datetime | None:
+    """Parse hourly timestamp and normalize to Home Assistant timezone."""
+    if not isinstance(raw_time, str):
+        return None
+    parsed = dt_util.parse_datetime(raw_time)
+    if parsed is None:
+        try:
+            parsed = datetime.fromisoformat(raw_time)
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=tz)
+    return parsed.astimezone(tz)
+
+
+def _solar_elevation_degrees(
+    at_local: datetime,
+    *,
+    latitude: float,
+    longitude: float,
+) -> float:
+    """Estimate solar elevation angle using NOAA approximation."""
+    if at_local.tzinfo is None:
+        at_local = at_local.replace(tzinfo=UTC)
+
+    day_of_year = at_local.timetuple().tm_yday
+    hour = at_local.hour + at_local.minute / 60.0 + at_local.second / 3600.0
+    gamma = 2.0 * math.pi / 365.0 * (day_of_year - 1 + (hour - 12.0) / 24.0)
+
+    declination = (
+        0.006918
+        - 0.399912 * math.cos(gamma)
+        + 0.070257 * math.sin(gamma)
+        - 0.006758 * math.cos(2.0 * gamma)
+        + 0.000907 * math.sin(2.0 * gamma)
+        - 0.002697 * math.cos(3.0 * gamma)
+        + 0.00148 * math.sin(3.0 * gamma)
+    )
+    equation_of_time = 229.18 * (
+        0.000075
+        + 0.001868 * math.cos(gamma)
+        - 0.032077 * math.sin(gamma)
+        - 0.014615 * math.cos(2.0 * gamma)
+        - 0.040849 * math.sin(2.0 * gamma)
+    )
+
+    utc_offset = at_local.utcoffset()
+    offset_hours = utc_offset.total_seconds() / 3600.0 if utc_offset is not None else 0.0
+    true_solar_minutes = (
+        hour * 60.0 + equation_of_time + 4.0 * longitude - 60.0 * offset_hours
+    ) % 1440.0
+    hour_angle_deg = true_solar_minutes / 4.0 - 180.0
+    if hour_angle_deg < -180.0:
+        hour_angle_deg += 360.0
+
+    lat_rad = math.radians(latitude)
+    hour_angle = math.radians(hour_angle_deg)
+    cos_zenith = (
+        math.sin(lat_rad) * math.sin(declination)
+        + math.cos(lat_rad) * math.cos(declination) * math.cos(hour_angle)
+    )
+    cos_zenith = max(-1.0, min(1.0, cos_zenith))
+    zenith_deg = math.degrees(math.acos(cos_zenith))
+    return 90.0 - zenith_deg
+
+
+def _astro_uv_from_solar(
+    *,
+    solar_elevation_deg: float,
+    cloud_cover_pct: float | None,
+) -> float:
+    """Estimate UV index from solar elevation with cloud attenuation."""
+    if solar_elevation_deg <= -6.0:
+        clear_uv = 0.0
+    elif solar_elevation_deg <= 0.0:
+        clear_uv = ((solar_elevation_deg + 6.0) / 6.0) * 0.3
+    else:
+        clear_uv = 12.0 * (max(0.0, math.sin(math.radians(solar_elevation_deg))) ** 1.25)
+    clear_uv = max(0.0, min(14.0, clear_uv))
+
+    attenuation = 1.0
+    if cloud_cover_pct is not None:
+        cloud_norm = max(0.0, min(100.0, cloud_cover_pct)) / 100.0
+        attenuation = max(0.1, 1.0 - 0.75 * (cloud_norm**3))
+
+    return round(max(0.0, min(14.0, clear_uv * attenuation)), 1)
+
+
+def _geo_to_wmts_tile(
+    latitude: float,
+    longitude: float,
+    *,
+    zoom: int,
+) -> tuple[int, int, int, int]:
+    """Convert WGS84 lat/lon to WMTS WebMercator tile + pixel."""
+    lat = max(-85.05112878, min(85.05112878, latitude))
+    lon = max(-180.0, min(180.0, longitude))
+    n = 2**zoom
+    x = n * ((lon + 180.0) / 360.0)
+    y = n * (
+        1.0
+        - (
+            math.log(
+                math.tan(math.radians(lat)) + 1.0 / math.cos(math.radians(lat))
+            )
+            / math.pi
+        )
+    ) / 2.0
+    col = max(0, min(n - 1, int(math.floor(x))))
+    row = max(0, min(n - 1, int(math.floor(y))))
+    pixel_x = max(0, min(255, int(math.floor((x - col) * 256.0))))
+    pixel_y = max(0, min(255, int(math.floor((y - row) * 256.0))))
+    return col, row, pixel_x, pixel_y
+
+
 def _jellyfish_risk_from_weather(sea_temp: float, wave_height: float, wind_speed: float) -> str:
     """Compute jellyfish risk from marine conditions."""
     score = 0.0
@@ -1279,6 +1462,24 @@ class AuraSnapshotProvider:
             gdacs_task,
             cap_task,
         )
+        algae_latitude = latitude
+        algae_longitude = longitude
+        if isinstance(jellyfish_data, dict):
+            jellyfish_lat = _optional_float(jellyfish_data.get("lat"), 6)
+            jellyfish_lon = _optional_float(jellyfish_data.get("lon"), 6)
+            if jellyfish_lat is not None and jellyfish_lon is not None:
+                algae_latitude = jellyfish_lat
+                algae_longitude = jellyfish_lon
+        (algae_tile_data, algae_tile_err), (smoke_tile_data, smoke_tile_err) = await asyncio.gather(
+            self._async_fetch_algae_tile_data(
+                latitude=algae_latitude,
+                longitude=algae_longitude,
+            ),
+            self._async_fetch_smoke_tile_data(
+                latitude=latitude,
+                longitude=longitude,
+            ),
+        )
 
         metrics = self._build_internal_metrics(
             latitude=latitude,
@@ -1317,10 +1518,14 @@ class AuraSnapshotProvider:
             weather_data=weather_data,
             marine_data=marine_data,
             air_data=air_data,
+            latitude=latitude,
+            longitude=longitude,
             personas=self._options.get(CONF_PERSONAS, []),
             tracking_entities=self._options.get(CONF_TRACKING_ENTITIES, []),
             gdacs_events=gdacs_events,
             cap_data=cap_data,
+            algae_tile_data=algae_tile_data,
+            smoke_tile_data=smoke_tile_data,
         )
         metrics.extend(jellyfish_metrics)
         metrics.extend(mosquito_metrics)
@@ -1349,6 +1554,8 @@ class AuraSnapshotProvider:
             weather_data=weather_data,
             marine_data=marine_data,
             air_data=air_data,
+            latitude=latitude,
+            longitude=longitude,
             personas=self._options.get(CONF_PERSONAS, []),
             daily_plan_enabled=_coerce_bool(
                 self._options.get(CONF_DAILY_PLAN, DEFAULT_DAILY_PLAN),
@@ -1423,6 +1630,8 @@ class AuraSnapshotProvider:
                     "earthquakes": "ok" if earthquake_err is None else earthquake_err,
                     "gdacs": "ok" if gdacs_err is None else gdacs_err,
                     "cap": "ok" if cap_err is None else cap_err,
+                    "algae_tiles": "ok" if algae_tile_err is None else algae_tile_err,
+                    "smoke_tiles": "ok" if smoke_tile_err is None else smoke_tile_err,
                 },
                 "icons": icon_catalog,
                 "personas": personas_meta,
@@ -1459,6 +1668,216 @@ class AuraSnapshotProvider:
             return payload, None
         except (TimeoutError, ClientError, ValueError) as err:
             return None, str(err)
+
+    async def _async_fetch_cams_featureinfo(
+        self,
+        *,
+        layer: str,
+        style: str,
+        latitude: float,
+        longitude: float,
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        """Fetch numeric CAMS value via WMS GetFeatureInfo."""
+        span = 0.03
+        params = {
+            "token": "public",
+            "SERVICE": "WMS",
+            "VERSION": "1.3.0",
+            "REQUEST": "GetFeatureInfo",
+            "LAYERS": layer,
+            "QUERY_LAYERS": layer,
+            "STYLES": style,
+            "FORMAT": "image/png",
+            "CRS": "EPSG:4326",
+            "BBOX": (
+                f"{latitude - span / 2.0:.6f},{longitude - span / 2.0:.6f},"
+                f"{latitude + span / 2.0:.6f},{longitude + span / 2.0:.6f}"
+            ),
+            "WIDTH": 101,
+            "HEIGHT": 101,
+            "I": 50,
+            "J": 50,
+            "INFO_FORMAT": "text/plain",
+        }
+        url = _build_url(_ECMWF_CAMS_WMS, params)
+        payload, error = await self._async_fetch_text(url)
+        if not isinstance(payload, str):
+            return None, error or f"{layer}:request_failed"
+
+        parsed = _parse_cams_featureinfo_text(payload)
+        if not isinstance(parsed, dict):
+            return None, f"{layer}:invalid_featureinfo"
+        parsed["layer"] = layer
+        parsed["style"] = style
+        parsed["source"] = "ecmwf_cams_wms"
+        return parsed, None
+
+    async def _async_fetch_smoke_tile_data(
+        self,
+        *,
+        latitude: float,
+        longitude: float,
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        """Fetch smoke-relevant numeric fields from CAMS WMS."""
+        layer_map = {
+            "bbaod550": ("composition_bbaod550", "sh_all_aod"),
+            "pm2p5": ("composition_pm2p5", "sh_all_pm2p5_defra_daqi"),
+            "fire_frp": ("composition_fire", "sh_all_fire"),
+        }
+        tasks = [
+            self._async_fetch_cams_featureinfo(
+                layer=layer,
+                style=style,
+                latitude=latitude,
+                longitude=longitude,
+            )
+            for layer, style in layer_map.values()
+        ]
+        results = await asyncio.gather(*tasks)
+
+        payload: dict[str, Any] = {
+            "source": "ecmwf_cams_wms",
+            "latitude": round(latitude, 6),
+            "longitude": round(longitude, 6),
+        }
+        errors: list[str] = []
+
+        for key, (result, err) in zip(layer_map.keys(), results):
+            if isinstance(result, dict):
+                payload[key] = result
+            if err is not None:
+                errors.append(str(err))
+
+        if not any(key in payload for key in layer_map):
+            return None, "; ".join(errors) if errors else "smoke_tiles_unavailable"
+        return payload, "; ".join(errors) if errors else None
+
+    async def _async_fetch_cmems_featureinfo(
+        self,
+        *,
+        layer: str,
+        style: str,
+        latitude: float,
+        longitude: float,
+        zoom: int = 6,
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        """Fetch numeric CMEMS value via WMTS GetFeatureInfo."""
+        col, row, pixel_x, pixel_y = _geo_to_wmts_tile(
+            latitude,
+            longitude,
+            zoom=zoom,
+        )
+        params = {
+            "SERVICE": "WMTS",
+            "REQUEST": "GetFeatureInfo",
+            "VERSION": "1.0.0",
+            "LAYER": layer,
+            "tilematrixset": "EPSG:3857",
+            "tilematrix": zoom,
+            "tilerow": row,
+            "tilecol": col,
+            "i": pixel_x,
+            "j": pixel_y,
+            "INFOFORMAT": "application/json",
+            "STYLE": style,
+        }
+        url = _build_url(_CMEMS_WMTS, params)
+        payload, error = await self._async_fetch_json(url)
+        if not isinstance(payload, dict):
+            return None, error or f"{layer}:request_failed"
+
+        features = payload.get("features")
+        if not isinstance(features, list) or not features:
+            return None, f"{layer}:no_features"
+        first = features[0]
+        if not isinstance(first, dict):
+            return None, f"{layer}:invalid_feature"
+
+        properties = first.get("properties")
+        if not isinstance(properties, dict):
+            return None, f"{layer}:missing_properties"
+
+        geometry = first.get("geometry")
+        geom_coordinates = geometry.get("coordinates") if isinstance(geometry, dict) else None
+        lat_resolved: float | None = _optional_float(properties.get("lat"), 6)
+        lon_resolved: float | None = _optional_float(properties.get("lon"), 6)
+        if (
+            (lat_resolved is None or lon_resolved is None)
+            and isinstance(geom_coordinates, list)
+            and len(geom_coordinates) >= 2
+        ):
+            lat_candidate = _optional_float(geom_coordinates[0], 6)
+            lon_candidate = _optional_float(geom_coordinates[1], 6)
+            if lat_resolved is None:
+                lat_resolved = lat_candidate
+            if lon_resolved is None:
+                lon_resolved = lon_candidate
+
+        return (
+            {
+                "layer": layer,
+                "style": style,
+                "dataset_id": properties.get("datasetId"),
+                "variable_id": properties.get("variableId"),
+                "value": _optional_float(properties.get("value"), 6),
+                "unit": properties.get("units"),
+                "grid_lat": lat_resolved,
+                "grid_lon": lon_resolved,
+                "source": "copernicus_marine_wmts",
+            },
+            None,
+        )
+
+    async def _async_fetch_algae_tile_data(
+        self,
+        *,
+        latitude: float,
+        longitude: float,
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        """Fetch chlorophyll value from Copernicus OceanColour tiles."""
+        # Probe nearby points to handle inland homes while still using the same source.
+        probes = [
+            (0.0, 0.0),
+            (0.06, 0.0),
+            (-0.06, 0.0),
+            (0.0, 0.06),
+            (0.0, -0.06),
+            (0.12, 0.0),
+            (-0.12, 0.0),
+            (0.0, 0.12),
+            (0.0, -0.12),
+        ]
+        errors: list[str] = []
+
+        for delta_lat, delta_lon in probes:
+            probe_lat = latitude + delta_lat
+            probe_lon = longitude + delta_lon
+            result, err = await self._async_fetch_cmems_featureinfo(
+                layer=_CMEMS_ALGAE_LAYER,
+                style=_CMEMS_ALGAE_STYLE,
+                latitude=probe_lat,
+                longitude=probe_lon,
+                zoom=6,
+            )
+            if err is not None:
+                errors.append(str(err))
+                continue
+            if not isinstance(result, dict):
+                continue
+            value = _optional_float(result.get("value"), 6)
+            if value is None:
+                continue
+            payload = dict(result)
+            payload["probe_latitude"] = round(probe_lat, 6)
+            payload["probe_longitude"] = round(probe_lon, 6)
+            payload["probe_distance_km"] = round(
+                _haversine_km(latitude, longitude, probe_lat, probe_lon),
+                2,
+            )
+            payload["source"] = "copernicus_oceancolour_wmts"
+            return payload, "; ".join(errors) if errors else None
+
+        return None, "; ".join(errors) if errors else "algae_tiles_unavailable"
 
     async def _async_fetch_earthquake_data(
         self, *, latitude: float, longitude: float
@@ -3231,21 +3650,23 @@ class AuraSnapshotProvider:
         weather_data: dict[str, Any] | None,
         marine_data: dict[str, Any] | None,
         air_data: dict[str, Any] | None,
+        latitude: float,
+        longitude: float,
         personas: Any,
         tracking_entities: Any,
         gdacs_events: list[dict[str, Any]] | None,
         cap_data: dict[str, Any] | None,
+        algae_tile_data: dict[str, Any] | None,
+        smoke_tile_data: dict[str, Any] | None,
     ) -> list[dict[str, Any]]:
-        """Build extra climate/hazard metrics: UV SED, WBGT, thunder, tides, algae, smoke, CAP, bites."""
+        """Build extra climate/hazard metrics: UV/astro, WBGT, thunder, tides, algae, smoke, CAP, bites."""
         values = {item.get("entity_id"): item.get("value") for item in metrics}
         weather_hourly = weather_data.get("hourly", {}) if isinstance(weather_data, dict) else {}
         marine_hourly = marine_data.get("hourly", {}) if isinstance(marine_data, dict) else {}
-        air_hourly = air_data.get("hourly", {}) if isinstance(air_data, dict) else {}
         weather_daily = weather_data.get("daily", {}) if isinstance(weather_data, dict) else {}
 
         weather_idx = self._select_hour_index(weather_hourly)
         marine_idx = self._select_hour_index(marine_hourly)
-        air_idx = self._select_hour_index(air_hourly)
 
         def hourly_float(
             hourly: dict[str, Any], key: str, idx: int, digits: int | None = None
@@ -3302,21 +3723,65 @@ class AuraSnapshotProvider:
         wave_height_now = hourly_float(marine_hourly, "wave_height", marine_idx, 2)
         if wave_height_now is None:
             wave_height_now = _optional_float(values.get("sensor.wave_height"), 2)
-        aqi_now = hourly_float(air_hourly, "european_aqi", air_idx, 0)
-        pm25_now = hourly_float(air_hourly, "pm2_5", air_idx, 1)
+
+        tz = dt_util.get_time_zone(self.hass.config.time_zone) or UTC
+        weather_time = weather_hourly.get("time")
+
+        def astro_row(offset: int) -> tuple[float | None, float | None]:
+            idx = weather_idx + offset
+            raw_time: Any = None
+            if isinstance(weather_time, list) and 0 <= idx < len(weather_time):
+                raw_time = weather_time[idx]
+            local_time = _parse_hourly_time(raw_time, tz)
+            if local_time is None:
+                return None, None
+            cloud = hourly_float(weather_hourly, "cloud_cover", idx, 1)
+            solar_elevation = _solar_elevation_degrees(
+                local_time,
+                latitude=latitude,
+                longitude=longitude,
+            )
+            astro_uv = _astro_uv_from_solar(
+                solar_elevation_deg=solar_elevation,
+                cloud_cover_pct=cloud,
+            )
+            return astro_uv, round(solar_elevation, 1)
+
+        astro_uv_now, astro_solar_now = astro_row(0)
+        astro_future: list[float] = []
+        for offset in (1, 2, 3):
+            future_uv, _future_solar = astro_row(offset)
+            if future_uv is not None:
+                astro_future.append(future_uv)
+        astro_uv_3h_max = max(astro_future) if astro_future else None
+        astro_risk_3h = "unavailable"
+        if astro_uv_3h_max is not None:
+            astro_risk_3h = _risk_from_index(
+                max(0, min(100, int(round((astro_uv_3h_max / 11.0) * 100.0))))
+            )
+        astro_now_vs_3h = "unavailable"
+        if astro_uv_now is not None and astro_uv_3h_max is not None:
+            if astro_uv_3h_max >= astro_uv_now + 1.5:
+                astro_now_vs_3h = "rising"
+            elif astro_uv_now >= astro_uv_3h_max + 1.5:
+                astro_now_vs_3h = "falling"
+            else:
+                astro_now_vs_3h = "stable"
+
+        uv_effective_now = astro_uv_now if astro_uv_now is not None else uv_now
 
         uv_sed_1h: float | None = None
-        if uv_now is not None:
-            uv_sed_1h = round(max(0.0, uv_now) * 0.9, 2)
+        if uv_effective_now is not None:
+            uv_sed_1h = round(max(0.0, uv_effective_now) * 0.9, 2)
         uv_status = "unavailable"
-        if uv_now is not None:
-            if uv_now >= 11:
+        if uv_effective_now is not None:
+            if uv_effective_now >= 11:
                 uv_status = "extreme"
-            elif uv_now >= 8:
+            elif uv_effective_now >= 8:
                 uv_status = "very_high"
-            elif uv_now >= 6:
+            elif uv_effective_now >= 6:
                 uv_status = "high"
-            elif uv_now >= 3:
+            elif uv_effective_now >= 3:
                 uv_status = "moderate"
             else:
                 uv_status = "low"
@@ -3518,8 +3983,8 @@ class AuraSnapshotProvider:
             wbgt_c = round(wbgt, 1)
 
             score = max(0.0, (wbgt_c - 20.0) * 4.6)
-            if uv_now is not None:
-                score += max(0.0, uv_now - 3.0) * 4.2
+            if uv_effective_now is not None:
+                score += max(0.0, uv_effective_now - 3.0) * 4.2
             if wind_now is not None:
                 score += max(0.0, wind_now - 15.0) * 0.7
             if apparent_now is not None:
@@ -3654,66 +4119,60 @@ class AuraSnapshotProvider:
             current_index = max(0, min(100, int(round(score))))
             current_risk = _risk_from_index(current_index)
 
-        water_quality = str(values.get("sensor.beach_water_quality_official") or "").strip().lower()
+        algae_chlorophyll: float | None = None
+        algae_dataset = "unknown"
+        algae_probe_distance_km: float | None = None
         algae_index: int | None = None
         algae_risk = "unavailable"
         algae_signal = "insufficient_data"
-        if sea_temp_now is not None and wave_height_now is not None:
-            score = max(0.0, (sea_temp_now - 18.0) * 7.0)
-            if wave_height_now < 0.6:
-                score += 24
-            elif wave_height_now < 1.0:
-                score += 14
-            if shortwave_now is not None:
-                score += min(20.0, max(0.0, shortwave_now - 300.0) / 18.0)
-            if any(token in water_quality for token in ("bad", "poor", "mala", "deficient")):
-                score += 26
-            elif any(token in water_quality for token in ("regular", "fair", "acceptable")):
-                score += 12
-            elif any(token in water_quality for token in ("excellent", "good", "buena", "bona")):
-                score -= 6
+        algae_source = "unavailable"
+        if isinstance(algae_tile_data, dict):
+            algae_source = str(algae_tile_data.get("source") or "copernicus_oceancolour_wmts")
+            algae_dataset = str(algae_tile_data.get("dataset_id") or _CMEMS_ALGAE_LAYER)
+            algae_chlorophyll = _optional_float(algae_tile_data.get("value"), 3)
+            algae_probe_distance_km = _optional_float(algae_tile_data.get("probe_distance_km"), 2)
+
+        if algae_chlorophyll is not None:
+            score = (math.log1p(max(0.0, algae_chlorophyll)) / math.log(11.0)) * 100.0
             algae_index = max(0, min(100, int(round(score))))
             algae_risk = _risk_from_index(algae_index)
-            algae_signal = (
-                f"sea={sea_temp_now}C,wave={wave_height_now}m,quality={water_quality or 'unknown'}"
-            )
+            algae_signal = f"chl={algae_chlorophyll}mg/m3,dataset={algae_dataset}"
+            if algae_probe_distance_km is not None and algae_probe_distance_km > 0:
+                algae_signal += f",probe={algae_probe_distance_km}km"
 
-        wildfire_distance = _optional_float(values.get("sensor.wildfire_nearest_distance_km"), 1)
-        wildfire_alert = str(values.get("sensor.wildfire_max_alert_level") or "").strip().lower()
+        smoke_bbaod550: float | None = None
+        smoke_pm25_tile: float | None = None
+        smoke_fire_frp: float | None = None
+        smoke_source = "unavailable"
         smoke_index: int | None = None
         smoke_risk = "unavailable"
         smoke_signal = "insufficient_data"
-        if wildfire_distance is not None or aqi_now is not None or pm25_now is not None:
+        if isinstance(smoke_tile_data, dict):
+            smoke_source = str(smoke_tile_data.get("source") or "ecmwf_cams_wms")
+            bbaod_payload = smoke_tile_data.get("bbaod550")
+            pm25_payload = smoke_tile_data.get("pm2p5")
+            fire_payload = smoke_tile_data.get("fire_frp")
+            if isinstance(bbaod_payload, dict):
+                smoke_bbaod550 = _optional_float(bbaod_payload.get("value"), 5)
+            if isinstance(pm25_payload, dict):
+                smoke_pm25_tile = _optional_float(pm25_payload.get("value"), 2)
+            if isinstance(fire_payload, dict):
+                smoke_fire_frp = _optional_float(fire_payload.get("value"), 2)
+
+        if smoke_bbaod550 is not None or smoke_pm25_tile is not None or smoke_fire_frp is not None:
             score = 0.0
-            if wildfire_distance is not None:
-                if wildfire_distance <= 100:
-                    score += 55
-                elif wildfire_distance <= 300:
-                    score += 40
-                elif wildfire_distance <= 700:
-                    score += 24
-                elif wildfire_distance <= 1500:
-                    score += 12
-            if wildfire_alert == "red":
-                score += 24
-            elif wildfire_alert == "orange":
-                score += 15
-            elif wildfire_alert in {"yellow", "green"}:
-                score += 7
-            if aqi_now is not None:
-                score += max(0.0, aqi_now - 40.0) * 0.6
-            if pm25_now is not None:
-                score += max(0.0, pm25_now - 15.0) * 1.2
-            if wind_now is not None:
-                if wind_now > 30:
-                    score -= 10
-                elif 8 <= wind_now <= 22:
-                    score += 4
+            if smoke_bbaod550 is not None:
+                score += min(70.0, smoke_bbaod550 * 350.0)
+            if smoke_pm25_tile is not None:
+                score += min(25.0, max(0.0, smoke_pm25_tile - 5.0) * 1.25)
+            if smoke_fire_frp is not None:
+                score += min(20.0, smoke_fire_frp * 0.2)
             smoke_index = max(0, min(100, int(round(score))))
             smoke_risk = _risk_from_index(smoke_index)
             smoke_signal = (
-                f"dist={wildfire_distance if wildfire_distance is not None else 'na'}km,"
-                f"alert={wildfire_alert or 'na'},aqi={aqi_now if aqi_now is not None else 'na'}"
+                f"bbaod={smoke_bbaod550 if smoke_bbaod550 is not None else 'na'},"
+                f"pm25={smoke_pm25_tile if smoke_pm25_tile is not None else 'na'},"
+                f"fire={smoke_fire_frp if smoke_fire_frp is not None else 'na'}"
             )
 
         cap_index = _optional_int(cap_data.get("index")) if isinstance(cap_data, dict) else None
@@ -3822,6 +4281,37 @@ class AuraSnapshotProvider:
                 "SED",
             ),
             metric("sensor.uv_dose_status", "UV dose status", uv_status),
+            metric(
+                "sensor.astro_solar_elevation",
+                "Astro solar elevation",
+                astro_solar_now,
+                "deg",
+                source="astro_model",
+            ),
+            metric(
+                "sensor.astro_uv_index_now",
+                "Astro UV index now",
+                astro_uv_now,
+                source="astro_model",
+            ),
+            metric(
+                "sensor.astro_uv_index_3h_max",
+                "Astro UV index +3h max",
+                astro_uv_3h_max,
+                source="astro_model",
+            ),
+            metric(
+                "sensor.astro_uv_risk_3h",
+                "Astro UV risk +3h",
+                astro_risk_3h,
+                source="astro_model",
+            ),
+            metric(
+                "sensor.astro_uv_now_vs_3h",
+                "Astro UV now vs +3h",
+                astro_now_vs_3h,
+                source="astro_model",
+            ),
             metric("sensor.wbgt_c", "WBGT", wbgt_c, "degC"),
             metric(
                 "sensor.dehydration_index",
@@ -3857,11 +4347,57 @@ class AuraSnapshotProvider:
             metric("sensor.algae_bloom_risk", "Algae bloom risk", algae_risk),
             metric("sensor.algae_bloom_index", "Algae bloom index", algae_index, "/100"),
             metric("sensor.algae_bloom_signal", "Algae bloom signal", algae_signal),
-            metric("sensor.algae_source", "Algae source", "internal_model+beach_quality"),
+            metric(
+                "sensor.algae_chlorophyll_mg_m3",
+                "Algae chlorophyll",
+                algae_chlorophyll,
+                "mg/m3",
+                source=algae_source,
+            ),
+            metric(
+                "sensor.algae_source",
+                "Algae source",
+                algae_source,
+                source=algae_source,
+                extras={
+                    "dataset_id": algae_dataset,
+                    "probe_distance_km": algae_probe_distance_km,
+                },
+            ),
             metric("sensor.smoke_transport_risk", "Smoke transport risk", smoke_risk),
             metric("sensor.smoke_transport_index", "Smoke transport index", smoke_index, "/100"),
             metric("sensor.smoke_transport_signal", "Smoke transport signal", smoke_signal),
-            metric("sensor.smoke_source", "Smoke source", "gdacs+air_quality_model"),
+            metric(
+                "sensor.smoke_cams_bbaod550",
+                "Smoke CAMS bbaod550",
+                smoke_bbaod550,
+                source=smoke_source,
+            ),
+            metric(
+                "sensor.smoke_cams_pm25",
+                "Smoke CAMS PM2.5",
+                smoke_pm25_tile,
+                "ug/m3",
+                source=smoke_source,
+            ),
+            metric(
+                "sensor.smoke_cams_fire_frp",
+                "Smoke CAMS fire radiative power",
+                smoke_fire_frp,
+                "W/m2",
+                source=smoke_source,
+            ),
+            metric(
+                "sensor.smoke_source",
+                "Smoke source",
+                smoke_source,
+                source=smoke_source,
+                extras={
+                    "bbaod550": smoke_bbaod550,
+                    "pm2p5": smoke_pm25_tile,
+                    "fire_frp": smoke_fire_frp,
+                },
+            ),
             metric("sensor.cap_alert_risk", "CAP alert risk", cap_risk, source=cap_source),
             metric(
                 "sensor.cap_alert_index",
@@ -3906,11 +4442,13 @@ class AuraSnapshotProvider:
         weather_data: dict[str, Any] | None,
         marine_data: dict[str, Any] | None,
         air_data: dict[str, Any] | None,
+        latitude: float,
+        longitude: float,
         personas: Any,
         daily_plan_enabled: bool,
         default_planner_mode: str,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        """Build daily planner + smart notification hints."""
+        """Build daily planner + smart notification hints with astro-UV support."""
         values = {item.get("entity_id"): item.get("value") for item in metrics}
         planner_mode_default = _normalize_planner_mode(default_planner_mode)
 
@@ -3970,18 +4508,28 @@ class AuraSnapshotProvider:
             end_idx = min(len(weather_times), start_idx + 24)
             for idx in range(start_idx, end_idx):
                 raw_time = weather_times[idx]
-                if not isinstance(raw_time, str):
+                local_dt = _parse_hourly_time(raw_time, tz)
+                if local_dt is None:
                     continue
-                parsed = dt_util.parse_datetime(raw_time)
-                if parsed is None:
-                    continue
-                if parsed.tzinfo is None:
-                    parsed = parsed.replace(tzinfo=tz)
-                local_dt = parsed.astimezone(tz)
+                cloud_cover = _optional_float(
+                    _hourly_value(weather_hourly, "cloud_cover", idx, None)
+                )
+                solar_elevation = _solar_elevation_degrees(
+                    local_dt,
+                    latitude=latitude,
+                    longitude=longitude,
+                )
+                astro_uv = _astro_uv_from_solar(
+                    solar_elevation_deg=solar_elevation,
+                    cloud_cover_pct=cloud_cover,
+                )
                 hourly_rows.append(
                     {
                         "label": local_dt.strftime("%m-%d %H:00"),
                         "uv": _optional_float(_hourly_value(weather_hourly, "uv_index", idx, None)),
+                        "astro_uv": astro_uv,
+                        "solar_elevation": round(solar_elevation, 1),
+                        "cloud_cover": cloud_cover,
                         "apparent_temp": _optional_float(
                             _hourly_value(weather_hourly, "apparent_temperature", idx, None)
                         ),
@@ -4047,7 +4595,9 @@ class AuraSnapshotProvider:
             profile = mode_profiles.get(mode, mode_profiles["normal"])
             score = 100.0
 
-            uv = _optional_float(row.get("uv"))
+            uv = _optional_float(row.get("astro_uv"))
+            if uv is None:
+                uv = _optional_float(row.get("uv"))
             if uv is None:
                 score -= 8.0
             else:
@@ -4193,7 +4743,9 @@ class AuraSnapshotProvider:
         sea_temp_model = _optional_float(values.get("sensor.sea_temperature_openmeteo"))
         sea_temp_now = sea_temp_official if sea_temp_official is not None else sea_temp_model
         rain_now = _optional_float(hourly_rows[0].get("rain_prob")) if hourly_rows else None
-        uv_now = _optional_float(hourly_rows[0].get("uv")) if hourly_rows else None
+        uv_now = _optional_float(hourly_rows[0].get("astro_uv")) if hourly_rows else None
+        if uv_now is None:
+            uv_now = _optional_float(hourly_rows[0].get("uv")) if hourly_rows else None
 
         default_outdoor_scores: list[int] = []
         default_beach_scores: list[int] = []
@@ -5206,6 +5758,7 @@ class AuraSnapshotProvider:
                 "hazards": _noto_icon_bundle("1f6a8"),
                 "planner": _noto_icon_bundle("1f4c5"),
                 "notifications": _noto_icon_bundle("1f514"),
+                "astro_risk": _noto_icon_bundle("1f31e"),
                 "uv_dose": _noto_icon_bundle("1f31e"),
                 "hydration": _noto_icon_bundle("1f4a7"),
                 "thunderstorm": _noto_icon_bundle("26a1_fe0f"),

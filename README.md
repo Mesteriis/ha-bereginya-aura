@@ -20,11 +20,12 @@ entities. It can optionally reuse selected HA entities in `hybrid` mode.
 - Adds persona `daily_plan` with `planner_mode` (`normal`, `child`, `elderly`, `sport`, `beach_day`)
 - Adds smart planner sensors: best outdoor/beach hours, now-vs-2..3h trend, beach pack list and notification hints
 - Adds UV dose/SED tracking by HA entities (`person`/`device_tracker`) + extra configured trackers
+- Adds astro-risk layer: UV from solar angle + cloud attenuation for now/+3h
 - Adds WBGT + dehydration index
 - Adds thunderstorm risk + 3h nowcast
 - Adds tide/current metrics from Open-Meteo Marine (`sea_level_height_msl`, `ocean_current_velocity`)
-- Adds algae bloom proxy risk from sea state + official water quality
-- Adds smoke transport proxy risk from wildfire proximity + AQI/PM2.5 + wind
+- Adds algae bloom index from Copernicus Marine OceanColour WMTS (`GetFeatureInfo`, numeric CHL)
+- Adds smoke transport index from ECMWF CAMS WMS (`GetFeatureInfo`, numeric bbaod/pm2.5/fire)
 - Adds CAP civil warning summary from Meteoalarm Atom feed (Spain)
 - Adds unified bite index (mosquito + tick + weather) + 3-day outlook
 - Exposes icon catalog for all metrics in snapshot `meta.icons.entities`
@@ -101,7 +102,9 @@ Response:
       "ticks": "ok",
       "earthquakes": "ok",
       "gdacs": "ok",
-      "cap": "ok"
+      "cap": "ok",
+      "algae_tiles": "ok",
+      "smoke_tiles": "ok"
     },
     "timezones": [
       {"timezone":"UTC+01","time":"22:05"},
