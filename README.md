@@ -197,6 +197,23 @@ bereginya_aura:
     beach_comfort_index: sensor.beach_comfort_index
 ```
 
+Personas options:
+
+- `skin_type`: 1..6 (Fitzpatrick scale)
+- `spf`: sunscreen factor (minimum is `1`, means no extra protection)
+- `shade_factor`: extra protection from shade/clothes (`1.0` default, `>1` more protection)
+- `uv_sensitivity`: UV sensitivity multiplier (`>1` burns faster, `<1` slower)
+- `heat_sensitivity`: heat stress multiplier (`>1` more sensitive)
+
+`skin_type` reference:
+
+- `1`: very fair skin, almost always burns, never tans
+- `2`: fair skin, usually burns, tans minimally
+- `3`: medium/light-brown skin, sometimes mild burn, gradually tans
+- `4`: olive/light-brown skin, rarely burns, tans easily
+- `5`: brown skin, very rarely burns, tans very easily
+- `6`: dark-brown/black skin, almost never burns
+
 Supported `source_mode`:
 
 - `internal`: only internal API data
