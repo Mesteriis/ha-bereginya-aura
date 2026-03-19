@@ -1,7 +1,7 @@
 """Constants for the Beregynya AURA integration."""
 
 DOMAIN = "bereginya_aura"
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 
 API_ENDPOINT = "/api/bereginya_aura/v1/snapshot"
 FRONTEND_STATIC_BASE = "/bereginya-aura"
@@ -21,6 +21,8 @@ CONF_PERSONAS = "personas"
 CONF_DAILY_PLAN = "daily_plan"
 CONF_DALY_PLAN = "daly_plan"
 CONF_PLANNER_MODE = "planner_mode"
+CONF_TRACKING_ENTITIES = "tracking_entities"
+CONF_UV_TRACKING_ENTITIES = "uv_tracking_entities"
 
 PLANNER_MODE_NORMAL = "normal"
 PLANNER_MODE_CHILD = "child"
@@ -50,6 +52,7 @@ DEFAULT_FORECAST_DAYS = 7
 DEFAULT_TIMEZONES = ""
 DEFAULT_DAILY_PLAN = True
 DEFAULT_PLANNER_MODE = PLANNER_MODE_NORMAL
+DEFAULT_TRACKING_ENTITIES: list[dict[str, object]] = []
 
 SERVICE_REFRESH_SNAPSHOT = "refresh_snapshot"
 
@@ -172,4 +175,39 @@ SOURCE_KEY_ALIASES = {
     "beach_pack_list": "sensor.aura_beach_pack_list",
     "beach_notification_key": "sensor.aura_beach_notification_key",
     "beach_notification_state": "sensor.aura_beach_notification_state",
+    "uv_dose_sed_1h": "sensor.uv_dose_sed_1h",
+    "uv_dose_sed_today_est": "sensor.uv_dose_sed_today_est",
+    "uv_dose_status": "sensor.uv_dose_status",
+    "wbgt_c": "sensor.wbgt_c",
+    "dehydration_index": "sensor.dehydration_index",
+    "dehydration_risk": "sensor.dehydration_risk",
+    "thunderstorm_risk": "sensor.thunderstorm_risk",
+    "thunderstorm_index": "sensor.thunderstorm_index",
+    "thunderstorm_cape": "sensor.thunderstorm_cape",
+    "thunderstorm_nowcast_3h": "sensor.thunderstorm_nowcast_3h",
+    "tide_level_m": "sensor.tide_level_m",
+    "tide_trend_3h": "sensor.tide_trend_3h",
+    "tide_range_24h_m": "sensor.tide_range_24h_m",
+    "ocean_current_speed": "sensor.ocean_current_speed",
+    "ocean_current_direction": "sensor.ocean_current_direction",
+    "current_risk": "sensor.current_risk",
+    "algae_bloom_risk": "sensor.algae_bloom_risk",
+    "algae_bloom_index": "sensor.algae_bloom_index",
+    "algae_bloom_signal": "sensor.algae_bloom_signal",
+    "algae_source": "sensor.algae_source",
+    "smoke_transport_risk": "sensor.smoke_transport_risk",
+    "smoke_transport_index": "sensor.smoke_transport_index",
+    "smoke_transport_signal": "sensor.smoke_transport_signal",
+    "smoke_source": "sensor.smoke_source",
+    "cap_alert_risk": "sensor.cap_alert_risk",
+    "cap_alert_index": "sensor.cap_alert_index",
+    "cap_alerts_active": "sensor.cap_alerts_active",
+    "cap_highest_severity": "sensor.cap_highest_severity",
+    "cap_top_event": "sensor.cap_top_event",
+    "cap_top_area": "sensor.cap_top_area",
+    "cap_top_expires": "sensor.cap_top_expires",
+    "cap_source": "sensor.cap_source",
+    "bite_index": "sensor.bite_index",
+    "bite_risk": "sensor.bite_risk",
+    "bite_outlook_3d": "sensor.bite_outlook_3d",
 }

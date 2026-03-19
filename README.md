@@ -19,6 +19,14 @@ entities. It can optionally reuse selected HA entities in `hybrid` mode.
 - Supports persona profiles from YAML (`skin_type`, `spf`, sensitivities) with per-person sunburn/heat sensors
 - Adds persona `daily_plan` with `planner_mode` (`normal`, `child`, `elderly`, `sport`, `beach_day`)
 - Adds smart planner sensors: best outdoor/beach hours, now-vs-2..3h trend, beach pack list and notification hints
+- Adds UV dose/SED tracking by HA entities (`person`/`device_tracker`) + extra configured trackers
+- Adds WBGT + dehydration index
+- Adds thunderstorm risk + 3h nowcast
+- Adds tide/current metrics from Open-Meteo Marine (`sea_level_height_msl`, `ocean_current_velocity`)
+- Adds algae bloom proxy risk from sea state + official water quality
+- Adds smoke transport proxy risk from wildfire proximity + AQI/PM2.5 + wind
+- Adds CAP civil warning summary from Meteoalarm Atom feed (Spain)
+- Adds unified bite index (mosquito + tick + weather) + 3-day outlook
 - Exposes icon catalog for all metrics in snapshot `meta.icons.entities`
 - Adds `icon_url` + `icon_gif_url` for each entity (GIF preferred support)
 - Supports extra timezone clocks via `timezones: "UTC+01,UTC+03,UTC-05"`
@@ -92,7 +100,8 @@ Response:
       "tiger_mosquito": "ok",
       "ticks": "ok",
       "earthquakes": "ok",
-      "gdacs": "ok"
+      "gdacs": "ok",
+      "cap": "ok"
     },
     "timezones": [
       {"timezone":"UTC+01","time":"22:05"},
@@ -172,18 +181,29 @@ bereginya_aura:
   timezones: "UTC+01,UTC+03,UTC-05"
   daily_plan: true
   planner_mode: normal
+  tracking_entities:
+    - id: avm_phone
+      entity_id: person.aleksandr_meshcheriakov
+      uv_exposure_factor: 1.0
+    - id: vem_phone
+      entity_id: person.victoria_meshchryakovf
+      uv_exposure_factor: 1.0
   personas:
     - id: vem
       name: VEM
       person_entity_id: person.victoria_meshchryakovf
+      tracker_entity_id: person.victoria_meshchryakovf
       skin_type: 2
       planner_mode: normal
+      uv_exposure_factor: 1.0
       spf: 30
     - id: avm
       name: AVM
       person_entity_id: person.aleksandr_meshcheriakov
+      tracker_entity_id: person.aleksandr_meshcheriakov
       skin_type: 3
       planner_mode: sport
+      uv_exposure_factor: 1.15
       spf: 15
   sources:
     precipitation_probability: sensor.precipitation_probability
@@ -211,12 +231,16 @@ Personas options:
 - `uv_sensitivity`: UV sensitivity multiplier (`>1` burns faster, `<1` slower)
 - `heat_sensitivity`: heat stress multiplier (`>1` more sensitive)
 - `planner_mode`: `normal`, `child`, `elderly`, `sport`, `beach_day`
+- `tracker_entity_id`: optional HA entity (`person.*` or `device_tracker.*`) for UV dose tracking
+- `uv_exposure_factor`: UV exposure multiplier for tracker dose accumulation (`0..2.5`)
 
 Planner options:
 
 - `daily_plan`: enable planner logic (`true` by default)
 - `daly_plan`: alias of `daily_plan` (for backward typo compatibility)
 - `planner_mode`: global default mode for personas without own mode
+- `tracking_entities`: extra HA entities for UV dose tracking (list of strings or dict with `id`, `entity_id`, `uv_exposure_factor`)
+- `uv_tracking_entities`: alias for `tracking_entities`
 
 `skin_type` reference:
 

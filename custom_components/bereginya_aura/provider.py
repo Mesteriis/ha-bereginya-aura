@@ -21,12 +21,15 @@ from .const import (
     CONF_DALY_PLAN,
     CONF_FORECAST_DAYS,
     CONF_PLANNER_MODE,
+    CONF_TRACKING_ENTITIES,
     CONF_REFRESH_SECONDS,
     CONF_SOURCE_MODE,
     CONF_SOURCES,
     CONF_TIMEZONES,
+    CONF_UV_TRACKING_ENTITIES,
     CONF_PERSONAS,
     DEFAULT_DAILY_PLAN,
+    DEFAULT_TRACKING_ENTITIES,
     DEFAULT_TIMEZONES,
     DEFAULT_FORECAST_DAYS,
     DEFAULT_PLANNER_MODE,
@@ -58,6 +61,7 @@ _INAT_OBSERVATIONS = "https://api.inaturalist.org/v1/observations"
 _INAT_TICKS_TAXON_ID = 51672
 _USGS_EQ_QUERY = "https://earthquake.usgs.gov/fdsnws/event/1/query"
 _GDACS_RSS = "https://www.gdacs.org/xml/rss.xml"
+_METEOALARM_ATOM_SPAIN = "https://feeds.meteoalarm.org/feeds/meteoalarm-legacy-atom-spain"
 _UTC_TOKEN_PATTERN = re.compile(r"^UTC([+-])(\d{1,2})$")
 _NOTO_EMOJI_BASE = "https://fonts.gstatic.com/s/e/notoemoji/latest"
 
@@ -175,6 +179,41 @@ _METRIC_ICON_EMOJI: dict[str, str] = {
     "sensor.aura_beach_pack_list": "1f392",
     "sensor.aura_beach_notification_key": "1f514",
     "sensor.aura_beach_notification_state": "1f514",
+    "sensor.uv_dose_sed_1h": "1f31e",
+    "sensor.uv_dose_sed_today_est": "1f31e",
+    "sensor.uv_dose_status": "1f31e",
+    "sensor.wbgt_c": "1f321_fe0f",
+    "sensor.dehydration_index": "1f4a7",
+    "sensor.dehydration_risk": "1f4a7",
+    "sensor.thunderstorm_risk": "26a1_fe0f",
+    "sensor.thunderstorm_index": "26a1_fe0f",
+    "sensor.thunderstorm_cape": "26a1_fe0f",
+    "sensor.thunderstorm_nowcast_3h": "23f3",
+    "sensor.tide_level_m": "1f30a",
+    "sensor.tide_trend_3h": "1f30a",
+    "sensor.tide_range_24h_m": "1f30a",
+    "sensor.ocean_current_speed": "1f30a",
+    "sensor.ocean_current_direction": "1f9ed",
+    "sensor.current_risk": "1f6a9",
+    "sensor.algae_bloom_risk": "1f9ab",
+    "sensor.algae_bloom_index": "1f9ab",
+    "sensor.algae_bloom_signal": "1f9ab",
+    "sensor.algae_source": "1f9ab",
+    "sensor.smoke_transport_risk": "1f32b_fe0f",
+    "sensor.smoke_transport_index": "1f32b_fe0f",
+    "sensor.smoke_transport_signal": "1f32b_fe0f",
+    "sensor.smoke_source": "1f32b_fe0f",
+    "sensor.cap_alert_risk": "1f6a8",
+    "sensor.cap_alert_index": "1f6a8",
+    "sensor.cap_alerts_active": "1f6a8",
+    "sensor.cap_highest_severity": "1f6a8",
+    "sensor.cap_top_event": "1f6a8",
+    "sensor.cap_top_area": "1f6a8",
+    "sensor.cap_top_expires": "1f6a8",
+    "sensor.cap_source": "1f6a8",
+    "sensor.bite_index": "1f99f",
+    "sensor.bite_risk": "1f99f",
+    "sensor.bite_outlook_3d": "1f99f",
 }
 _SKIN_TYPE_MED_J_M2: dict[int, int] = {
     1: 200,
@@ -185,6 +224,7 @@ _SKIN_TYPE_MED_J_M2: dict[int, int] = {
     6: 1000,
 }
 _PERSONA_ID_PATTERN = re.compile(r"[^a-z0-9_]+")
+_TRACKING_ID_PATTERN = re.compile(r"[^a-z0-9_]+")
 
 
 def _normalize_timezone_token(raw_token: str) -> str | None:
@@ -220,6 +260,17 @@ def _normalize_persona_id(raw_value: Any, index: int) -> str:
     normalized = _PERSONA_ID_PATTERN.sub("_", raw).strip("_")
     if not normalized:
         normalized = f"persona_{index + 1}"
+    return normalized[:48]
+
+
+def _normalize_tracking_id(raw_value: Any, index: int) -> str:
+    """Normalize tracker id to ASCII token."""
+    raw = str(raw_value or "").strip().lower()
+    if not raw:
+        raw = f"tracker_{index + 1}"
+    normalized = _TRACKING_ID_PATTERN.sub("_", raw).strip("_")
+    if not normalized:
+        normalized = f"tracker_{index + 1}"
     return normalized[:48]
 
 
@@ -297,6 +348,14 @@ def _normalize_personas(
         else:
             person_entity_id = person_entity_id.strip()
 
+        tracker_entity_id = row.get("tracker_entity_id")
+        if not isinstance(tracker_entity_id, str):
+            tracker_entity_id = person_entity_id
+        elif not tracker_entity_id.strip():
+            tracker_entity_id = person_entity_id
+        else:
+            tracker_entity_id = tracker_entity_id.strip()
+
         enabled_raw = row.get("enabled", True)
         if isinstance(enabled_raw, str):
             enabled = enabled_raw.strip().lower() not in {"0", "false", "off", "no"}
@@ -308,6 +367,7 @@ def _normalize_personas(
                 "id": persona_id,
                 "name": name,
                 "person_entity_id": person_entity_id,
+                "tracker_entity_id": tracker_entity_id,
                 "skin_type": skin_type,
                 "spf": _clamp_float(row.get("spf", 1.0), 1.0, 1.0, 100.0),
                 "shade_factor": _clamp_float(row.get("shade_factor", 1.0), 1.0, 0.2, 5.0),
@@ -320,11 +380,61 @@ def _normalize_personas(
                 "planner_mode": _normalize_planner_mode(
                     row.get("planner_mode", default_planner_mode)
                 ),
+                "uv_exposure_factor": _clamp_float(
+                    row.get("uv_exposure_factor", 1.0), 1.0, 0.0, 2.5
+                ),
                 "enabled": enabled,
             }
         )
 
     return personas
+
+
+def _normalize_tracking_entities(raw_trackers: Any) -> list[dict[str, Any]]:
+    """Normalize extra tracking entities from YAML."""
+    if not isinstance(raw_trackers, list):
+        return []
+
+    rows: list[dict[str, Any]] = []
+    for item in raw_trackers:
+        if isinstance(item, str):
+            entity_id = item.strip()
+            if entity_id:
+                rows.append({"entity_id": entity_id})
+            continue
+        if isinstance(item, dict):
+            rows.append(item)
+
+    trackers: list[dict[str, Any]] = []
+    used_ids: set[str] = set()
+    used_entities: set[str] = set()
+    for idx, row in enumerate(rows):
+        entity_id = str(row.get("entity_id") or "").strip()
+        if not entity_id:
+            continue
+        if entity_id in used_entities:
+            continue
+        used_entities.add(entity_id)
+
+        tracker_id = _normalize_tracking_id(row.get("id", entity_id), idx)
+        base_id = tracker_id
+        suffix = 2
+        while tracker_id in used_ids:
+            tracker_id = f"{base_id}_{suffix}"
+            suffix += 1
+        used_ids.add(tracker_id)
+
+        trackers.append(
+            {
+                "id": tracker_id,
+                "entity_id": entity_id,
+                "name": str(row.get("name") or tracker_id).strip() or tracker_id,
+                "uv_exposure_factor": _clamp_float(
+                    row.get("uv_exposure_factor", 1.0), 1.0, 0.0, 2.5
+                ),
+            }
+        )
+    return trackers
 
 
 def normalize_options(raw_options: dict[str, Any] | None) -> dict[str, Any]:
@@ -389,6 +499,11 @@ def normalize_options(raw_options: dict[str, Any] | None) -> dict[str, Any]:
         options.get(CONF_PERSONAS, []),
         default_planner_mode=planner_mode,
     )
+    raw_trackers = options.get(
+        CONF_TRACKING_ENTITIES,
+        options.get(CONF_UV_TRACKING_ENTITIES, DEFAULT_TRACKING_ENTITIES),
+    )
+    tracking_entities = _normalize_tracking_entities(raw_trackers)
 
     return {
         CONF_SOURCE_MODE: source_mode,
@@ -399,6 +514,7 @@ def normalize_options(raw_options: dict[str, Any] | None) -> dict[str, Any]:
         CONF_PERSONAS: personas,
         CONF_DAILY_PLAN: daily_plan,
         CONF_PLANNER_MODE: planner_mode,
+        CONF_TRACKING_ENTITIES: tracking_entities,
     }
 
 
@@ -552,6 +668,10 @@ def _metric_emoji_code(entity_id: str, weather_code: int | None) -> str | None:
     if entity_id in {"sensor.weather_summary", "sensor.weather_code"}:
         return _weather_emoji_code(weather_code)
     if entity_id.startswith("sensor.aura_"):
+        if "_tracker_" in entity_id and entity_id.endswith("_uv_sed_today"):
+            return "1f31e"
+        if "_tracker_" in entity_id and entity_id.endswith("_uv_exposure_state"):
+            return "1f4f1"
         if entity_id.endswith("_sunburn_time_min") or entity_id.endswith("_sunburn_risk"):
             return "1f31e"
         if entity_id.endswith("_heat_stress_index") or entity_id.endswith("_heat_stress_risk"):
@@ -1036,6 +1156,9 @@ class AuraSnapshotProvider:
         self._cache: dict[str, Any] | None = None
         self._cache_until = datetime.fromtimestamp(0, tz=UTC)
         self._lock = asyncio.Lock()
+        self._uv_sed_by_tracker: dict[str, float] = {}
+        self._uv_sed_day: str = ""
+        self._uv_sed_last_update: datetime | None = None
 
     @property
     def options(self) -> dict[str, Any]:
@@ -1079,8 +1202,9 @@ class AuraSnapshotProvider:
                 "longitude": longitude,
                 "hourly": (
                     "temperature_2m,apparent_temperature,precipitation_probability,precipitation,"
-                    "weather_code,uv_index,wind_speed_10m,surface_pressure,"
-                    "relative_humidity_2m"
+                    "weather_code,uv_index,wind_speed_10m,wind_direction_10m,surface_pressure,"
+                    "relative_humidity_2m,cloud_cover,dew_point_2m,direct_radiation,"
+                    "shortwave_radiation,cape"
                 ),
                 "daily": (
                     "weather_code,temperature_2m_max,temperature_2m_min,"
@@ -1096,7 +1220,10 @@ class AuraSnapshotProvider:
             {
                 "latitude": latitude,
                 "longitude": longitude,
-                "hourly": "wave_height,wave_direction,wave_period,sea_surface_temperature",
+                "hourly": (
+                    "wave_height,wave_direction,wave_period,sea_surface_temperature,"
+                    "sea_level_height_msl,ocean_current_velocity,ocean_current_direction"
+                ),
                 "timezone": timezone,
                 "forecast_days": forecast_days,
             },
@@ -1130,6 +1257,7 @@ class AuraSnapshotProvider:
             latitude=latitude, longitude=longitude
         )
         gdacs_task = self._async_fetch_gdacs_events()
+        cap_task = self._async_fetch_cap_alerts()
         (
             (weather_data, weather_err),
             (marine_data, marine_err),
@@ -1139,6 +1267,7 @@ class AuraSnapshotProvider:
             (tick_data, tick_err),
             (earthquake_data, earthquake_err),
             (gdacs_events, gdacs_err),
+            (cap_data, cap_err),
         ) = await asyncio.gather(
             weather_task,
             marine_task,
@@ -1148,6 +1277,7 @@ class AuraSnapshotProvider:
             tick_task,
             earthquake_task,
             gdacs_task,
+            cap_task,
         )
 
         metrics = self._build_internal_metrics(
@@ -1182,12 +1312,23 @@ class AuraSnapshotProvider:
             longitude=longitude,
             gdacs_events=gdacs_events,
         )
+        climate_extra_metrics = self._build_climate_extra_metrics(
+            metrics=metrics,
+            weather_data=weather_data,
+            marine_data=marine_data,
+            air_data=air_data,
+            personas=self._options.get(CONF_PERSONAS, []),
+            tracking_entities=self._options.get(CONF_TRACKING_ENTITIES, []),
+            gdacs_events=gdacs_events,
+            cap_data=cap_data,
+        )
         metrics.extend(jellyfish_metrics)
         metrics.extend(mosquito_metrics)
         metrics.extend(tick_metrics)
         metrics.extend(earthquake_metrics)
         metrics.extend(wildfire_metrics)
         metrics.extend(hazard_metrics)
+        metrics.extend(climate_extra_metrics)
         exposure_persona_metrics = self._build_exposure_and_persona_metrics(
             metrics=metrics,
             personas=self._options.get(CONF_PERSONAS, []),
@@ -1233,6 +1374,7 @@ class AuraSnapshotProvider:
             tick_data=tick_data,
             earthquake_data=earthquake_data,
             gdacs_events=gdacs_events,
+            cap_data=cap_data,
         )
         personas_meta: list[dict[str, Any]] = []
         raw_personas = self._options.get(CONF_PERSONAS, [])
@@ -1245,10 +1387,12 @@ class AuraSnapshotProvider:
                         "id": persona.get("id"),
                         "name": persona.get("name"),
                         "person_entity_id": persona.get("person_entity_id"),
+                        "tracker_entity_id": persona.get("tracker_entity_id"),
                         "skin_type": persona.get("skin_type"),
                         "spf": persona.get("spf"),
                         "shade_factor": persona.get("shade_factor"),
                         "uv_sensitivity": persona.get("uv_sensitivity"),
+                        "uv_exposure_factor": persona.get("uv_exposure_factor"),
                         "heat_sensitivity": persona.get("heat_sensitivity"),
                         "planner_mode": persona.get("planner_mode"),
                         "enabled": persona.get("enabled", True),
@@ -1278,11 +1422,13 @@ class AuraSnapshotProvider:
                     "ticks": "ok" if tick_err is None else tick_err,
                     "earthquakes": "ok" if earthquake_err is None else earthquake_err,
                     "gdacs": "ok" if gdacs_err is None else gdacs_err,
+                    "cap": "ok" if cap_err is None else cap_err,
                 },
                 "icons": icon_catalog,
                 "personas": personas_meta,
                 "daily_plan": planner_payload,
                 "daly_plan": planner_payload,
+                "tracking_entities": self._options.get(CONF_TRACKING_ENTITIES, []),
                 "ha_overrides": overrides,
                 "forecast_count": len(forecast_daily),
             },
@@ -1518,6 +1664,131 @@ class AuraSnapshotProvider:
             )
 
         return events, None
+
+    async def _async_fetch_cap_alerts(
+        self,
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        """Fetch Meteoalarm CAP-like warning feed (Spain) and aggregate active alerts."""
+        xml_text, xml_err = await self._async_fetch_text(_METEOALARM_ATOM_SPAIN)
+        if not isinstance(xml_text, str):
+            return None, xml_err or "cap_feed_unavailable"
+
+        ns = {
+            "atom": "http://www.w3.org/2005/Atom",
+            "cap": "urn:oasis:names:tc:emergency:cap:1.2",
+        }
+        try:
+            root = ET.fromstring(xml_text.lstrip("\ufeff\r\n\t "))
+        except ET.ParseError as err:
+            return None, f"xml_parse_error:{err}"
+
+        now_utc = datetime.now(tz=UTC)
+        entries = root.findall("./atom:entry", ns)
+
+        severity_rank = {
+            "extreme": 4,
+            "severe": 3,
+            "moderate": 2,
+            "minor": 1,
+            "unknown": 0,
+        }
+
+        warnings: list[dict[str, Any]] = []
+        for entry in entries:
+            severity = str(entry.findtext("cap:severity", default="", namespaces=ns)).strip().lower()
+            if not severity:
+                severity = "unknown"
+            event = str(entry.findtext("cap:event", default="", namespaces=ns)).strip() or "unknown"
+            area = str(entry.findtext("cap:areaDesc", default="", namespaces=ns)).strip() or "unknown"
+            certainty = (
+                str(entry.findtext("cap:certainty", default="", namespaces=ns)).strip() or "unknown"
+            )
+            urgency = str(entry.findtext("cap:urgency", default="", namespaces=ns)).strip() or "unknown"
+            status = str(entry.findtext("cap:status", default="", namespaces=ns)).strip() or "unknown"
+            link_elem = entry.find("atom:link", ns)
+            link = ""
+            if link_elem is not None:
+                link = str(link_elem.attrib.get("href", "")).strip()
+
+            expires_raw = str(entry.findtext("cap:expires", default="", namespaces=ns)).strip()
+            sent_raw = str(entry.findtext("cap:sent", default="", namespaces=ns)).strip()
+
+            expires_at: datetime | None = None
+            sent_at: datetime | None = None
+            if expires_raw:
+                parsed = dt_util.parse_datetime(expires_raw)
+                if parsed is not None:
+                    if parsed.tzinfo is None:
+                        parsed = parsed.replace(tzinfo=UTC)
+                    expires_at = parsed.astimezone(UTC)
+            if sent_raw:
+                parsed = dt_util.parse_datetime(sent_raw)
+                if parsed is not None:
+                    if parsed.tzinfo is None:
+                        parsed = parsed.replace(tzinfo=UTC)
+                    sent_at = parsed.astimezone(UTC)
+
+            if expires_at is not None and expires_at < now_utc:
+                continue
+
+            warnings.append(
+                {
+                    "severity": severity,
+                    "severity_rank": severity_rank.get(severity, 0),
+                    "event": event,
+                    "area": area,
+                    "certainty": certainty,
+                    "urgency": urgency,
+                    "status": status,
+                    "link": link if link else None,
+                    "expires_at": expires_at.isoformat() if expires_at is not None else None,
+                    "expires_ts": int(expires_at.timestamp()) if expires_at is not None else 0,
+                    "sent_at": sent_at.isoformat() if sent_at is not None else None,
+                    "sent_ts": int(sent_at.timestamp()) if sent_at is not None else 0,
+                }
+            )
+
+        active_count = len(warnings)
+        highest_severity = "unknown"
+        cap_index = 0
+        top_event = "none"
+        top_area = "none"
+        top_expires = "unknown"
+        top_link: str | None = None
+
+        if warnings:
+            top = max(
+                warnings,
+                key=lambda item: (
+                    _safe_int(item.get("severity_rank"), 0),
+                    _safe_int(item.get("sent_ts"), 0),
+                ),
+            )
+            highest_severity = str(top.get("severity") or "unknown")
+            top_event = str(top.get("event") or "unknown")
+            top_area = str(top.get("area") or "unknown")
+            top_expires = str(top.get("expires_at") or "unknown")
+            top_link = top.get("link")
+            cap_index = min(
+                100,
+                max(
+                    0,
+                    _safe_int(top.get("severity_rank"), 0) * 22 + min(active_count, 10) * 6,
+                ),
+            )
+
+        return (
+            {
+                "active_count": active_count,
+                "highest_severity": highest_severity,
+                "index": cap_index,
+                "top_event": top_event,
+                "top_area": top_area,
+                "top_expires": top_expires,
+                "top_link": top_link,
+            },
+            None,
+        )
 
     async def _async_fetch_jellyfish_data(
         self, *, latitude: float, longitude: float
@@ -2953,6 +3224,681 @@ class AuraSnapshotProvider:
 
         return result
 
+    def _build_climate_extra_metrics(
+        self,
+        *,
+        metrics: list[dict[str, Any]],
+        weather_data: dict[str, Any] | None,
+        marine_data: dict[str, Any] | None,
+        air_data: dict[str, Any] | None,
+        personas: Any,
+        tracking_entities: Any,
+        gdacs_events: list[dict[str, Any]] | None,
+        cap_data: dict[str, Any] | None,
+    ) -> list[dict[str, Any]]:
+        """Build extra climate/hazard metrics: UV SED, WBGT, thunder, tides, algae, smoke, CAP, bites."""
+        values = {item.get("entity_id"): item.get("value") for item in metrics}
+        weather_hourly = weather_data.get("hourly", {}) if isinstance(weather_data, dict) else {}
+        marine_hourly = marine_data.get("hourly", {}) if isinstance(marine_data, dict) else {}
+        air_hourly = air_data.get("hourly", {}) if isinstance(air_data, dict) else {}
+        weather_daily = weather_data.get("daily", {}) if isinstance(weather_data, dict) else {}
+
+        weather_idx = self._select_hour_index(weather_hourly)
+        marine_idx = self._select_hour_index(marine_hourly)
+        air_idx = self._select_hour_index(air_hourly)
+
+        def hourly_float(
+            hourly: dict[str, Any], key: str, idx: int, digits: int | None = None
+        ) -> float | None:
+            value = _hourly_value(hourly, key, idx, None)
+            return _optional_float(value, digits)
+
+        def hourly_int(hourly: dict[str, Any], key: str, idx: int) -> int | None:
+            value = _hourly_value(hourly, key, idx, None)
+            return _optional_int(value)
+
+        def metric(
+            entity_id: str,
+            name: str,
+            value: Any,
+            unit: str | None = None,
+            icon: str | None = None,
+            source: str = "internal_model",
+            source_entity: str | None = None,
+            extras: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            item: dict[str, Any] = {
+                "entity_id": entity_id,
+                "name": name,
+                "value": "unavailable" if value is None else value,
+                "source": source,
+            }
+            if unit is not None:
+                item["unit"] = unit
+            if icon is not None:
+                item["icon"] = icon
+            if source_entity is not None:
+                item["source_entity"] = source_entity
+            if isinstance(extras, dict):
+                item.update(extras)
+            return item
+
+        uv_now = hourly_float(weather_hourly, "uv_index", weather_idx, 1)
+        temperature_now = hourly_float(weather_hourly, "temperature_2m", weather_idx, 1)
+        apparent_now = hourly_float(weather_hourly, "apparent_temperature", weather_idx, 1)
+        humidity_now = hourly_float(weather_hourly, "relative_humidity_2m", weather_idx, 1)
+        cloud_cover_now = hourly_float(weather_hourly, "cloud_cover", weather_idx, 1)
+        cape_now = hourly_float(weather_hourly, "cape", weather_idx, 1)
+        precip_now = hourly_float(weather_hourly, "precipitation", weather_idx, 1)
+        wind_now = hourly_float(weather_hourly, "wind_speed_10m", weather_idx, 1)
+        shortwave_now = hourly_float(weather_hourly, "shortwave_radiation", weather_idx, 1)
+        weather_code_now = hourly_int(weather_hourly, "weather_code", weather_idx)
+        sea_temp_now = hourly_float(marine_hourly, "sea_surface_temperature", marine_idx, 1)
+        if sea_temp_now is None:
+            sea_temp_now = _optional_float(
+                values.get("sensor.beach_water_temperature_official"),
+                1,
+            )
+        wave_height_now = hourly_float(marine_hourly, "wave_height", marine_idx, 2)
+        if wave_height_now is None:
+            wave_height_now = _optional_float(values.get("sensor.wave_height"), 2)
+        aqi_now = hourly_float(air_hourly, "european_aqi", air_idx, 0)
+        pm25_now = hourly_float(air_hourly, "pm2_5", air_idx, 1)
+
+        uv_sed_1h: float | None = None
+        if uv_now is not None:
+            uv_sed_1h = round(max(0.0, uv_now) * 0.9, 2)
+        uv_status = "unavailable"
+        if uv_now is not None:
+            if uv_now >= 11:
+                uv_status = "extreme"
+            elif uv_now >= 8:
+                uv_status = "very_high"
+            elif uv_now >= 6:
+                uv_status = "high"
+            elif uv_now >= 3:
+                uv_status = "moderate"
+            else:
+                uv_status = "low"
+
+        trackers: list[dict[str, Any]] = []
+        tracker_ids: set[str] = set()
+        tracker_entities_set: set[str] = set()
+
+        def add_tracker(
+            *,
+            tracker_id: str,
+            name: str,
+            entity_id: str | None,
+            exposure_factor: float,
+        ) -> None:
+            if not isinstance(entity_id, str) or not entity_id.strip():
+                return
+            normalized_entity = entity_id.strip()
+            if normalized_entity in tracker_entities_set:
+                return
+            normalized_id = tracker_id.strip().lower()
+            if not normalized_id:
+                normalized_id = _normalize_tracking_id(name, len(trackers))
+            if normalized_id in tracker_ids:
+                normalized_id = f"{normalized_id}_{len(trackers) + 1}"
+            tracker_entities_set.add(normalized_entity)
+            tracker_ids.add(normalized_id)
+            trackers.append(
+                {
+                    "id": normalized_id,
+                    "name": name,
+                    "entity_id": normalized_entity,
+                    "uv_exposure_factor": max(0.0, min(2.5, exposure_factor)),
+                }
+            )
+
+        if isinstance(personas, list):
+            for idx, persona in enumerate(personas):
+                if not isinstance(persona, dict):
+                    continue
+                if persona.get("enabled") is False:
+                    continue
+                persona_id = _normalize_tracking_id(persona.get("id"), idx)
+                persona_name = str(persona.get("name") or persona_id).strip() or persona_id
+                tracker_entity_id = persona.get("tracker_entity_id")
+                person_entity_id = persona.get("person_entity_id")
+                if not isinstance(tracker_entity_id, str) or not tracker_entity_id.strip():
+                    tracker_entity_id = (
+                        person_entity_id if isinstance(person_entity_id, str) else None
+                    )
+                add_tracker(
+                    tracker_id=persona_id,
+                    name=persona_name,
+                    entity_id=tracker_entity_id,
+                    exposure_factor=_clamp_float(
+                        persona.get("uv_exposure_factor", 1.0), 1.0, 0.0, 2.5
+                    ),
+                )
+
+        if isinstance(tracking_entities, list):
+            for idx, tracker in enumerate(tracking_entities):
+                if not isinstance(tracker, dict):
+                    continue
+                add_tracker(
+                    tracker_id=_normalize_tracking_id(
+                        tracker.get("id", tracker.get("entity_id")),
+                        idx,
+                    ),
+                    name=str(tracker.get("name") or tracker.get("id") or f"tracker_{idx + 1}"),
+                    entity_id=tracker.get("entity_id")
+                    if isinstance(tracker.get("entity_id"), str)
+                    else None,
+                    exposure_factor=_clamp_float(
+                        tracker.get("uv_exposure_factor", 1.0), 1.0, 0.0, 2.5
+                    ),
+                )
+
+        local_day = dt_util.now().strftime("%Y-%m-%d")
+        if self._uv_sed_day != local_day:
+            self._uv_sed_by_tracker = {}
+            self._uv_sed_day = local_day
+            self._uv_sed_last_update = None
+
+        now_utc = datetime.now(tz=UTC)
+        delta_hours = 0.0
+        if self._uv_sed_last_update is not None:
+            delta_hours = max(
+                0.0,
+                min(
+                    1.5,
+                    (now_utc - self._uv_sed_last_update).total_seconds() / 3600.0,
+                ),
+            )
+        self._uv_sed_last_update = now_utc
+
+        def outdoor_weight(state_value: str) -> float:
+            value = state_value.strip().lower()
+            if value in {"", "unknown", "unavailable", "none"}:
+                return 0.0
+            if value == "home":
+                return 0.0
+            if value in {"not_home", "away"}:
+                return 0.6
+            if any(
+                token in value
+                for token in (
+                    "walking",
+                    "on_foot",
+                    "walk",
+                    "foot",
+                    "beach",
+                    "outdoor",
+                    "park",
+                    "running",
+                    "cycling",
+                    "sport",
+                    "пеш",
+                    "пляж",
+                    "улиц",
+                    "прогул",
+                )
+            ):
+                return 1.0
+            return 0.5
+
+        tracker_metrics: list[dict[str, Any]] = []
+        sed_total_today = 0.0
+        for tracker in trackers:
+            tracker_id = str(tracker.get("id") or "").strip()
+            if not tracker_id:
+                continue
+            entity_id = str(tracker.get("entity_id") or "").strip()
+            if not entity_id:
+                continue
+            tracker_name = str(tracker.get("name") or tracker_id).strip() or tracker_id
+            exposure_factor = _clamp_float(
+                tracker.get("uv_exposure_factor", 1.0), 1.0, 0.0, 2.5
+            )
+
+            state = self.hass.states.get(entity_id)
+            state_value = str(state.state or "unknown") if state is not None else "unavailable"
+            exposure_state = "indoors"
+            weight = outdoor_weight(state_value)
+            if state_value in {"unavailable", "unknown"}:
+                exposure_state = "unknown"
+            elif weight >= 0.9:
+                exposure_state = "outdoor"
+            elif weight > 0.0:
+                exposure_state = "mixed"
+
+            previous_sed = _safe_float(self._uv_sed_by_tracker.get(tracker_id, 0.0), 0.0)
+            if uv_sed_1h is not None and delta_hours > 0:
+                increment = uv_sed_1h * delta_hours * weight * exposure_factor
+                previous_sed += increment
+            current_sed = round(max(0.0, min(40.0, previous_sed)), 2)
+            self._uv_sed_by_tracker[tracker_id] = current_sed
+            sed_total_today += current_sed
+
+            tracker_prefix = f"sensor.aura_tracker_{tracker_id}"
+            tracker_metrics.extend(
+                [
+                    metric(
+                        f"{tracker_prefix}_uv_sed_today",
+                        f"{tracker_name} UV SED today",
+                        current_sed,
+                        unit="SED",
+                        icon="mdi:white-balance-sunny",
+                        source="ha_tracking",
+                        source_entity=entity_id,
+                        extras={"state": state_value},
+                    ),
+                    metric(
+                        f"{tracker_prefix}_uv_exposure_state",
+                        f"{tracker_name} UV exposure state",
+                        exposure_state,
+                        icon="mdi:walk",
+                        source="ha_tracking",
+                        source_entity=entity_id,
+                    ),
+                ]
+            )
+
+        sed_total_value: float | None = None
+        if trackers:
+            sed_total_value = round(sed_total_today, 2)
+
+        wbgt_c: float | None = None
+        dehydration_index: int | None = None
+        dehydration_risk = "unavailable"
+        if temperature_now is not None and humidity_now is not None:
+            vapor_hpa = (humidity_now / 100.0) * 6.105 * math.exp(
+                (17.27 * temperature_now) / (237.7 + temperature_now)
+            )
+            wbgt = 0.567 * temperature_now + 0.393 * vapor_hpa + 3.94
+            if shortwave_now is not None:
+                wbgt += min(4.5, max(0.0, shortwave_now - 180.0) / 140.0)
+            if wind_now is not None:
+                wbgt -= min(2.5, max(0.0, wind_now) / 20.0)
+            wbgt_c = round(wbgt, 1)
+
+            score = max(0.0, (wbgt_c - 20.0) * 4.6)
+            if uv_now is not None:
+                score += max(0.0, uv_now - 3.0) * 4.2
+            if wind_now is not None:
+                score += max(0.0, wind_now - 15.0) * 0.7
+            if apparent_now is not None:
+                score += max(0.0, apparent_now - 30.0) * 1.8
+            dehydration_index = max(0, min(100, int(round(score))))
+            dehydration_risk = _risk_from_index(dehydration_index)
+
+        def thunder_index_for_offset(offset: int) -> int | None:
+            idx = weather_idx + offset
+            cape_v = hourly_float(weather_hourly, "cape", idx, 0)
+            precip_v = hourly_float(weather_hourly, "precipitation", idx, 1)
+            cloud_v = hourly_float(weather_hourly, "cloud_cover", idx, 1)
+            humidity_v = hourly_float(weather_hourly, "relative_humidity_2m", idx, 1)
+            code_v = hourly_int(weather_hourly, "weather_code", idx)
+            if (
+                cape_v is None
+                and precip_v is None
+                and cloud_v is None
+                and humidity_v is None
+                and code_v is None
+            ):
+                return None
+
+            score = 0.0
+            if code_v in {95, 96, 99}:
+                score += 72.0
+            elif code_v in {80, 81, 82}:
+                score += 14.0
+
+            if cape_v is not None:
+                if cape_v >= 2500:
+                    score += 35.0
+                elif cape_v >= 1500:
+                    score += 25.0
+                elif cape_v >= 800:
+                    score += 16.0
+                elif cape_v >= 300:
+                    score += 8.0
+
+            if precip_v is not None:
+                if precip_v >= 2.0:
+                    score += 12.0
+                elif precip_v >= 0.5:
+                    score += 6.0
+
+            if cloud_v is not None and cloud_v >= 70:
+                score += 6.0
+            if humidity_v is not None and humidity_v >= 75:
+                score += 6.0
+            return max(0, min(100, int(round(score))))
+
+        thunder_now = thunder_index_for_offset(0)
+        thunder_next = [
+            value
+            for value in (
+                thunder_index_for_offset(1),
+                thunder_index_for_offset(2),
+                thunder_index_for_offset(3),
+            )
+            if value is not None
+        ]
+        thunder_future_max = max(thunder_next) if thunder_next else None
+        thunder_index = thunder_now
+        if thunder_index is None:
+            thunder_index = thunder_future_max
+        elif thunder_future_max is not None:
+            thunder_index = max(thunder_index, thunder_future_max)
+        thunder_risk = _risk_from_index(thunder_index) if thunder_index is not None else "unavailable"
+        thunder_nowcast = "unavailable"
+        if thunder_now is not None and thunder_future_max is not None:
+            if thunder_future_max >= thunder_now + 12:
+                thunder_nowcast = "rising"
+            elif thunder_now >= thunder_future_max + 12:
+                thunder_nowcast = "decreasing"
+            elif thunder_future_max >= 65 or thunder_now >= 65:
+                thunder_nowcast = "high"
+            else:
+                thunder_nowcast = "stable_low"
+        elif thunder_index is not None:
+            thunder_nowcast = "high" if thunder_index >= 65 else "stable_low"
+
+        tide_level = hourly_float(marine_hourly, "sea_level_height_msl", marine_idx, 3)
+        tide_plus_3h = hourly_float(marine_hourly, "sea_level_height_msl", marine_idx + 3, 3)
+        tide_trend = "unavailable"
+        if tide_level is not None and tide_plus_3h is not None:
+            delta = tide_plus_3h - tide_level
+            if delta > 0.03:
+                tide_trend = "rising"
+            elif delta < -0.03:
+                tide_trend = "falling"
+            else:
+                tide_trend = "stable"
+
+        tide_values: list[float] = []
+        series = marine_hourly.get("sea_level_height_msl")
+        if isinstance(series, list):
+            for val in series[marine_idx : marine_idx + 24]:
+                parsed = _optional_float(val)
+                if parsed is not None:
+                    tide_values.append(parsed)
+        tide_range_24h = (
+            round(max(tide_values) - min(tide_values), 3)
+            if len(tide_values) >= 2
+            else None
+        )
+
+        ocean_current_speed = hourly_float(
+            marine_hourly, "ocean_current_velocity", marine_idx, 2
+        )
+        ocean_current_direction = hourly_float(
+            marine_hourly, "ocean_current_direction", marine_idx, 1
+        )
+        current_index: int | None = None
+        current_risk = "unavailable"
+        if ocean_current_speed is not None:
+            score = 0.0
+            if ocean_current_speed >= 4.0:
+                score += 82
+            elif ocean_current_speed >= 3.0:
+                score += 62
+            elif ocean_current_speed >= 2.0:
+                score += 42
+            elif ocean_current_speed >= 1.2:
+                score += 24
+            elif ocean_current_speed >= 0.6:
+                score += 12
+            if wave_height_now is not None:
+                if wave_height_now >= 2.0:
+                    score += 18
+                elif wave_height_now >= 1.2:
+                    score += 10
+            current_index = max(0, min(100, int(round(score))))
+            current_risk = _risk_from_index(current_index)
+
+        water_quality = str(values.get("sensor.beach_water_quality_official") or "").strip().lower()
+        algae_index: int | None = None
+        algae_risk = "unavailable"
+        algae_signal = "insufficient_data"
+        if sea_temp_now is not None and wave_height_now is not None:
+            score = max(0.0, (sea_temp_now - 18.0) * 7.0)
+            if wave_height_now < 0.6:
+                score += 24
+            elif wave_height_now < 1.0:
+                score += 14
+            if shortwave_now is not None:
+                score += min(20.0, max(0.0, shortwave_now - 300.0) / 18.0)
+            if any(token in water_quality for token in ("bad", "poor", "mala", "deficient")):
+                score += 26
+            elif any(token in water_quality for token in ("regular", "fair", "acceptable")):
+                score += 12
+            elif any(token in water_quality for token in ("excellent", "good", "buena", "bona")):
+                score -= 6
+            algae_index = max(0, min(100, int(round(score))))
+            algae_risk = _risk_from_index(algae_index)
+            algae_signal = (
+                f"sea={sea_temp_now}C,wave={wave_height_now}m,quality={water_quality or 'unknown'}"
+            )
+
+        wildfire_distance = _optional_float(values.get("sensor.wildfire_nearest_distance_km"), 1)
+        wildfire_alert = str(values.get("sensor.wildfire_max_alert_level") or "").strip().lower()
+        smoke_index: int | None = None
+        smoke_risk = "unavailable"
+        smoke_signal = "insufficient_data"
+        if wildfire_distance is not None or aqi_now is not None or pm25_now is not None:
+            score = 0.0
+            if wildfire_distance is not None:
+                if wildfire_distance <= 100:
+                    score += 55
+                elif wildfire_distance <= 300:
+                    score += 40
+                elif wildfire_distance <= 700:
+                    score += 24
+                elif wildfire_distance <= 1500:
+                    score += 12
+            if wildfire_alert == "red":
+                score += 24
+            elif wildfire_alert == "orange":
+                score += 15
+            elif wildfire_alert in {"yellow", "green"}:
+                score += 7
+            if aqi_now is not None:
+                score += max(0.0, aqi_now - 40.0) * 0.6
+            if pm25_now is not None:
+                score += max(0.0, pm25_now - 15.0) * 1.2
+            if wind_now is not None:
+                if wind_now > 30:
+                    score -= 10
+                elif 8 <= wind_now <= 22:
+                    score += 4
+            smoke_index = max(0, min(100, int(round(score))))
+            smoke_risk = _risk_from_index(smoke_index)
+            smoke_signal = (
+                f"dist={wildfire_distance if wildfire_distance is not None else 'na'}km,"
+                f"alert={wildfire_alert or 'na'},aqi={aqi_now if aqi_now is not None else 'na'}"
+            )
+
+        cap_index = _optional_int(cap_data.get("index")) if isinstance(cap_data, dict) else None
+        cap_active = _optional_int(cap_data.get("active_count")) if isinstance(cap_data, dict) else None
+        cap_highest = (
+            str(cap_data.get("highest_severity") or "unknown")
+            if isinstance(cap_data, dict)
+            else "unavailable"
+        )
+        cap_event = (
+            str(cap_data.get("top_event") or "unknown")
+            if isinstance(cap_data, dict)
+            else "unavailable"
+        )
+        cap_area = (
+            str(cap_data.get("top_area") or "unknown")
+            if isinstance(cap_data, dict)
+            else "unavailable"
+        )
+        cap_expires = (
+            str(cap_data.get("top_expires") or "unknown")
+            if isinstance(cap_data, dict)
+            else "unavailable"
+        )
+        cap_link = cap_data.get("top_link") if isinstance(cap_data, dict) else None
+        cap_risk = _risk_from_index(cap_index) if cap_index is not None else "unavailable"
+        cap_source = "meteoalarm_atom_spain" if isinstance(cap_data, dict) else "unavailable"
+
+        mosquito_index = _optional_int(values.get("sensor.tiger_mosquito_index"))
+        if mosquito_index is None:
+            mosquito_index = _optional_int(values.get("sensor.mosquito_index"))
+        tick_index = _optional_int(values.get("sensor.tick_index"))
+        bite_index: int | None = None
+        bite_risk = "unavailable"
+        if mosquito_index is not None or tick_index is not None:
+            score = 0.0
+            if mosquito_index is not None:
+                score += mosquito_index * 0.6
+            if tick_index is not None:
+                score += tick_index * 0.35
+            if humidity_now is not None and humidity_now > 65:
+                score += min(10.0, (humidity_now - 65) * 0.4)
+            if temperature_now is not None and 18 <= temperature_now <= 32:
+                score += 8.0
+            bite_index = max(0, min(100, int(round(score))))
+            bite_risk = _risk_from_index(bite_index)
+
+        bite_outlook = "unavailable"
+        daily_time = weather_daily.get("time") if isinstance(weather_daily, dict) else None
+        if (
+            isinstance(daily_time, list)
+            and daily_time
+            and mosquito_index is not None
+            and tick_index is not None
+        ):
+            risk_rank = {"very_low": 1, "low": 2, "moderate": 3, "high": 4, "very_high": 5}
+            day_scores: list[int] = []
+            for idx, _day in enumerate(daily_time[:3]):
+                temp_max = _safe_float(
+                    _hourly_value(weather_daily, "temperature_2m_max", idx, 0.0), 0.0
+                )
+                temp_min = _safe_float(
+                    _hourly_value(weather_daily, "temperature_2m_min", idx, 0.0), 0.0
+                )
+                rain_prob_max = _safe_int(
+                    _hourly_value(weather_daily, "precipitation_probability_max", idx, 0), 0
+                )
+                wind_max = _safe_float(
+                    _hourly_value(weather_daily, "wind_speed_10m_max", idx, 0.0), 0.0
+                )
+                mos_risk = _forecast_mosquito_risk(
+                    baseline_index=mosquito_index,
+                    temp_min=temp_min,
+                    temp_max=temp_max,
+                    rain_probability_max=rain_prob_max,
+                    wind_max_kmh=wind_max,
+                )
+                tick_risk_est = _forecast_tick_risk(
+                    baseline_index=tick_index,
+                    temp_min=temp_min,
+                    temp_max=temp_max,
+                    rain_probability_max=rain_prob_max,
+                    wind_max_kmh=wind_max,
+                )
+                day_score = max(risk_rank.get(mos_risk, 1), risk_rank.get(tick_risk_est, 1))
+                day_scores.append(day_score)
+            if day_scores:
+                avg = sum(day_scores) / len(day_scores)
+                if avg >= 4.5:
+                    bite_outlook = "very_high"
+                elif avg >= 3.5:
+                    bite_outlook = "high"
+                elif avg >= 2.5:
+                    bite_outlook = "moderate"
+                elif avg >= 1.5:
+                    bite_outlook = "low"
+                else:
+                    bite_outlook = "very_low"
+
+        result: list[dict[str, Any]] = [
+            metric("sensor.uv_dose_sed_1h", "UV dose (1h full exposure)", uv_sed_1h, "SED"),
+            metric(
+                "sensor.uv_dose_sed_today_est",
+                "UV dose today (tracked)",
+                sed_total_value,
+                "SED",
+            ),
+            metric("sensor.uv_dose_status", "UV dose status", uv_status),
+            metric("sensor.wbgt_c", "WBGT", wbgt_c, "degC"),
+            metric(
+                "sensor.dehydration_index",
+                "Dehydration index",
+                dehydration_index,
+                "/100",
+            ),
+            metric("sensor.dehydration_risk", "Dehydration risk", dehydration_risk),
+            metric("sensor.thunderstorm_risk", "Thunderstorm risk", thunder_risk),
+            metric("sensor.thunderstorm_index", "Thunderstorm index", thunder_index, "/100"),
+            metric("sensor.thunderstorm_cape", "CAPE", cape_now, "J/kg"),
+            metric(
+                "sensor.thunderstorm_nowcast_3h",
+                "Thunderstorm nowcast +3h",
+                thunder_nowcast,
+            ),
+            metric("sensor.tide_level_m", "Tide level (MSL)", tide_level, "m"),
+            metric("sensor.tide_trend_3h", "Tide trend +3h", tide_trend),
+            metric("sensor.tide_range_24h_m", "Tide range 24h", tide_range_24h, "m"),
+            metric(
+                "sensor.ocean_current_speed",
+                "Ocean current speed",
+                ocean_current_speed,
+                "km/h",
+            ),
+            metric(
+                "sensor.ocean_current_direction",
+                "Ocean current direction",
+                ocean_current_direction,
+                "deg",
+            ),
+            metric("sensor.current_risk", "Current risk", current_risk),
+            metric("sensor.algae_bloom_risk", "Algae bloom risk", algae_risk),
+            metric("sensor.algae_bloom_index", "Algae bloom index", algae_index, "/100"),
+            metric("sensor.algae_bloom_signal", "Algae bloom signal", algae_signal),
+            metric("sensor.algae_source", "Algae source", "internal_model+beach_quality"),
+            metric("sensor.smoke_transport_risk", "Smoke transport risk", smoke_risk),
+            metric("sensor.smoke_transport_index", "Smoke transport index", smoke_index, "/100"),
+            metric("sensor.smoke_transport_signal", "Smoke transport signal", smoke_signal),
+            metric("sensor.smoke_source", "Smoke source", "gdacs+air_quality_model"),
+            metric("sensor.cap_alert_risk", "CAP alert risk", cap_risk, source=cap_source),
+            metric(
+                "sensor.cap_alert_index",
+                "CAP alert index",
+                cap_index,
+                "/100",
+                source=cap_source,
+            ),
+            metric(
+                "sensor.cap_alerts_active",
+                "CAP alerts active",
+                cap_active,
+                source=cap_source,
+            ),
+            metric(
+                "sensor.cap_highest_severity",
+                "CAP highest severity",
+                cap_highest,
+                source=cap_source,
+            ),
+            metric("sensor.cap_top_event", "CAP top event", cap_event, source=cap_source),
+            metric("sensor.cap_top_area", "CAP top area", cap_area, source=cap_source),
+            metric("sensor.cap_top_expires", "CAP top expires", cap_expires, source=cap_source),
+            metric(
+                "sensor.cap_source",
+                "CAP source",
+                cap_source,
+                source=cap_source,
+                extras={"cap_link": cap_link},
+            ),
+            metric("sensor.bite_index", "Bite index", bite_index, "/100"),
+            metric("sensor.bite_risk", "Bite risk", bite_risk),
+            metric("sensor.bite_outlook_3d", "Bite outlook 3d", bite_outlook),
+        ]
+        result.extend(tracker_metrics)
+        return result
+
     def _build_daily_planner_metrics(
         self,
         *,
@@ -4168,6 +5114,10 @@ class AuraSnapshotProvider:
             }:
                 if isinstance(value, str) and value.startswith(("http://", "https://")):
                     metric["icon_external_url"] = value
+            elif entity_id == "sensor.cap_source":
+                cap_link = metric.get("cap_link")
+                if isinstance(cap_link, str) and cap_link.startswith(("http://", "https://")):
+                    metric["icon_external_url"] = cap_link
             elif entity_id == "sensor.jellyfish_icon_code":
                 if isinstance(value, str) and value not in {"", "unknown", "unavailable"}:
                     metric["icon_external_code"] = value
@@ -4203,6 +5153,7 @@ class AuraSnapshotProvider:
         tick_data: dict[str, Any] | None,
         earthquake_data: dict[str, Any] | None,
         gdacs_events: list[dict[str, Any]] | None,
+        cap_data: dict[str, Any] | None,
     ) -> dict[str, Any]:
         """Build icon catalog for external reuse."""
         weather_code: int | None = None
@@ -4255,6 +5206,15 @@ class AuraSnapshotProvider:
                 "hazards": _noto_icon_bundle("1f6a8"),
                 "planner": _noto_icon_bundle("1f4c5"),
                 "notifications": _noto_icon_bundle("1f514"),
+                "uv_dose": _noto_icon_bundle("1f31e"),
+                "hydration": _noto_icon_bundle("1f4a7"),
+                "thunderstorm": _noto_icon_bundle("26a1_fe0f"),
+                "tides_currents": _noto_icon_bundle("1f30a"),
+                "algae": _noto_icon_bundle("1f9ab"),
+                "smoke": _noto_icon_bundle("1f32b_fe0f"),
+                "cap_alerts": _noto_icon_bundle("1f6a8"),
+                "bites": _noto_icon_bundle("1f99f"),
+                "tracking": _noto_icon_bundle("1f4f1"),
             },
             "entities": entity_icons,
         }
@@ -4322,6 +5282,17 @@ class AuraSnapshotProvider:
                 "active_events_global": len(current_events),
                 "top_alert_level": top_hazard_alert,
                 "top_icon_url": top_hazard_icon,
+                **_noto_icon_bundle("1f6a8"),
+            }
+        if isinstance(cap_data, dict):
+            catalog["cap_alerts"] = {
+                "source": "Meteoalarm",
+                "active_alerts": cap_data.get("active_count"),
+                "highest_severity": cap_data.get("highest_severity"),
+                "top_event": cap_data.get("top_event"),
+                "top_area": cap_data.get("top_area"),
+                "top_expires": cap_data.get("top_expires"),
+                "top_link": cap_data.get("top_link"),
                 **_noto_icon_bundle("1f6a8"),
             }
 
