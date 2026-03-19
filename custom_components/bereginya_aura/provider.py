@@ -22,6 +22,7 @@ from .const import (
     CONF_SOURCE_MODE,
     CONF_SOURCES,
     CONF_TIMEZONES,
+    CONF_PERSONAS,
     DEFAULT_TIMEZONES,
     DEFAULT_FORECAST_DAYS,
     DEFAULT_REFRESH_SECONDS,
@@ -120,6 +121,12 @@ _METRIC_ICON_EMOJI: dict[str, str] = {
     "sensor.tick_last_report": "1f41b",
     "sensor.tick_source": "1f41b",
     "sensor.tick_icon_url": "1f41b",
+    "sensor.rip_current_risk": "1f30a",
+    "sensor.rip_current_index": "1f30a",
+    "sensor.heat_stress_risk": "1f321_fe0f",
+    "sensor.heat_stress_index": "1f321_fe0f",
+    "sensor.heat_index_c": "1f321_fe0f",
+    "sensor.wet_bulb_c": "1f4a7",
     "sensor.earthquake_risk": "1f30b",
     "sensor.earthquake_index": "1f30b",
     "sensor.earthquake_events_24h": "1f30b",
@@ -154,6 +161,15 @@ _METRIC_ICON_EMOJI: dict[str, str] = {
     "sensor.hazard_last_update": "1f6a8",
     "sensor.hazard_source": "1f6a8",
 }
+_SKIN_TYPE_MED_J_M2: dict[int, int] = {
+    1: 200,
+    2: 250,
+    3: 300,
+    4: 450,
+    5: 600,
+    6: 1000,
+}
+_PERSONA_ID_PATTERN = re.compile(r"[^a-z0-9_]+")
 
 
 def _normalize_timezone_token(raw_token: str) -> str | None:
@@ -179,6 +195,90 @@ def _timezone_token_to_offset(token: str) -> str | None:
     sign = normalized[3]
     hour = int(normalized[4:])
     return f"{sign}{hour:02d}:00"
+
+
+def _normalize_persona_id(raw_value: Any, index: int) -> str:
+    """Normalize persona id to ASCII token."""
+    raw = str(raw_value or "").strip().lower()
+    if not raw:
+        raw = f"persona_{index + 1}"
+    normalized = _PERSONA_ID_PATTERN.sub("_", raw).strip("_")
+    if not normalized:
+        normalized = f"persona_{index + 1}"
+    return normalized[:48]
+
+
+def _clamp_float(value: Any, default: float, min_value: float, max_value: float) -> float:
+    """Parse float and clamp to [min, max]."""
+    parsed = _safe_float(value, default)
+    return max(min_value, min(parsed, max_value))
+
+
+def _normalize_personas(raw_personas: Any) -> list[dict[str, Any]]:
+    """Normalize personas from YAML into canonical list."""
+    rows: list[dict[str, Any]] = []
+    if isinstance(raw_personas, dict):
+        for key, payload in raw_personas.items():
+            if isinstance(payload, dict):
+                rows.append({"id": key, **payload})
+            else:
+                rows.append({"id": key})
+    elif isinstance(raw_personas, list):
+        rows = [row for row in raw_personas if isinstance(row, dict)]
+    else:
+        return []
+
+    personas: list[dict[str, Any]] = []
+    used_ids: set[str] = set()
+    for idx, row in enumerate(rows):
+        persona_id = _normalize_persona_id(row.get("id"), idx)
+        base_id = persona_id
+        suffix = 2
+        while persona_id in used_ids:
+            persona_id = f"{base_id}_{suffix}"
+            suffix += 1
+        used_ids.add(persona_id)
+
+        name = str(row.get("name") or persona_id).strip() or persona_id
+        skin_type = _safe_int(row.get("skin_type"), 3)
+        if skin_type < 1:
+            skin_type = 1
+        if skin_type > 6:
+            skin_type = 6
+
+        person_entity_id = row.get("person_entity_id")
+        if not isinstance(person_entity_id, str):
+            person_entity_id = None
+        elif not person_entity_id.strip():
+            person_entity_id = None
+        else:
+            person_entity_id = person_entity_id.strip()
+
+        enabled_raw = row.get("enabled", True)
+        if isinstance(enabled_raw, str):
+            enabled = enabled_raw.strip().lower() not in {"0", "false", "off", "no"}
+        else:
+            enabled = bool(enabled_raw)
+
+        personas.append(
+            {
+                "id": persona_id,
+                "name": name,
+                "person_entity_id": person_entity_id,
+                "skin_type": skin_type,
+                "spf": _clamp_float(row.get("spf", 1.0), 1.0, 1.0, 100.0),
+                "shade_factor": _clamp_float(row.get("shade_factor", 1.0), 1.0, 0.2, 5.0),
+                "uv_sensitivity": _clamp_float(
+                    row.get("uv_sensitivity", 1.0), 1.0, 0.5, 2.5
+                ),
+                "heat_sensitivity": _clamp_float(
+                    row.get("heat_sensitivity", 1.0), 1.0, 0.6, 1.8
+                ),
+                "enabled": enabled,
+            }
+        )
+
+    return personas
 
 
 def normalize_options(raw_options: dict[str, Any] | None) -> dict[str, Any]:
@@ -229,12 +329,15 @@ def normalize_options(raw_options: dict[str, Any] | None) -> dict[str, Any]:
                 continue
             sources[key] = value
 
+    personas = _normalize_personas(options.get(CONF_PERSONAS, []))
+
     return {
         CONF_SOURCE_MODE: source_mode,
         CONF_REFRESH_SECONDS: refresh_seconds,
         CONF_FORECAST_DAYS: forecast_days,
         CONF_TIMEZONES: ",".join(normalized_timezones),
         CONF_SOURCES: sources,
+        CONF_PERSONAS: personas,
     }
 
 
@@ -387,6 +490,13 @@ def _metric_emoji_code(entity_id: str, weather_code: int | None) -> str | None:
     """Pick emoji icon code for a metric."""
     if entity_id in {"sensor.weather_summary", "sensor.weather_code"}:
         return _weather_emoji_code(weather_code)
+    if entity_id.startswith("sensor.aura_"):
+        if entity_id.endswith("_sunburn_time_min") or entity_id.endswith("_sunburn_risk"):
+            return "1f31e"
+        if entity_id.endswith("_heat_stress_index") or entity_id.endswith("_heat_stress_risk"):
+            return "1f321_fe0f"
+        if entity_id.endswith("_presence") or entity_id.endswith("_profile"):
+            return "1f9d1"
     return _METRIC_ICON_EMOJI.get(entity_id)
 
 
@@ -686,6 +796,114 @@ def _forecast_tick_risk(
     return "very_low"
 
 
+def _heat_index_c(temperature_c: float, humidity_pct: float) -> float:
+    """Estimate heat index in Celsius using Rothfusz-like regression."""
+    t = temperature_c
+    rh = max(0.0, min(100.0, humidity_pct))
+    if t < 20:
+        return round(t, 1)
+    hi = (
+        -8.784695
+        + 1.61139411 * t
+        + 2.338549 * rh
+        - 0.14611605 * t * rh
+        - 0.012308094 * t * t
+        - 0.016424828 * rh * rh
+        + 0.002211732 * t * t * rh
+        + 0.00072546 * t * rh * rh
+        - 0.000003582 * t * t * rh * rh
+    )
+    return round(max(t, hi), 1)
+
+
+def _wet_bulb_c(temperature_c: float, humidity_pct: float) -> float:
+    """Approximate wet-bulb temperature in Celsius (Stull 2011)."""
+    t = temperature_c
+    rh = max(1.0, min(100.0, humidity_pct))
+    wb = (
+        t * math.atan(0.151977 * math.sqrt(rh + 8.313659))
+        + math.atan(t + rh)
+        - math.atan(rh - 1.676331)
+        + 0.00391838 * (rh ** 1.5) * math.atan(0.023101 * rh)
+        - 4.686035
+    )
+    return round(wb, 1)
+
+
+def _rip_current_index(
+    *,
+    wave_height_m: float,
+    wave_period_s: float,
+    wind_speed_kmh: float,
+    rain_probability_pct: float,
+) -> int:
+    """Estimate rip-current risk index from marine/weather proxies."""
+    score = 0.0
+
+    if wave_height_m >= 2.0:
+        score += 40
+    elif wave_height_m >= 1.4:
+        score += 30
+    elif wave_height_m >= 0.9:
+        score += 20
+    elif wave_height_m >= 0.5:
+        score += 10
+
+    if wave_period_s >= 10:
+        score += 26
+    elif wave_period_s >= 8:
+        score += 18
+    elif wave_period_s >= 6:
+        score += 10
+
+    if wind_speed_kmh >= 35:
+        score += 20
+    elif wind_speed_kmh >= 25:
+        score += 14
+    elif wind_speed_kmh >= 15:
+        score += 8
+
+    if rain_probability_pct >= 70:
+        score += 8
+    elif rain_probability_pct >= 40:
+        score += 4
+
+    return max(0, min(100, int(round(score))))
+
+
+def _sunburn_minutes(
+    *,
+    uv_index: float,
+    skin_type: int,
+    spf: float,
+    shade_factor: float,
+    uv_sensitivity: float,
+) -> int | None:
+    """Estimate minutes to minimal erythema (sunburn) for a persona."""
+    uv = max(0.0, uv_index)
+    if uv < 0.1:
+        return None
+    med = _SKIN_TYPE_MED_J_M2.get(skin_type, _SKIN_TYPE_MED_J_M2[3])
+    adjusted_med = med * max(1.0, spf) * max(0.2, shade_factor) / max(0.5, uv_sensitivity)
+    minutes = int(round((adjusted_med * 40.0) / (uv * 60.0)))
+    return max(1, min(720, minutes))
+
+
+def _sunburn_risk(minutes_to_burn: int | None) -> str:
+    """Map burn-time estimate to compact risk."""
+    if minutes_to_burn is None:
+        return "very_low"
+    if minutes_to_burn <= 20:
+        return "very_high"
+    if minutes_to_burn <= 40:
+        return "high"
+    if minutes_to_burn <= 70:
+        return "moderate"
+    if minutes_to_burn <= 120:
+        return "low"
+    return "very_low"
+
+
 def _daily_hourly_values(hourly: dict[str, Any], key: str, day: str) -> list[float]:
     """Extract numeric values for one day from hourly arrays."""
     times = hourly.get("time")
@@ -896,6 +1114,11 @@ class AuraSnapshotProvider:
         metrics.extend(earthquake_metrics)
         metrics.extend(wildfire_metrics)
         metrics.extend(hazard_metrics)
+        exposure_persona_metrics = self._build_exposure_and_persona_metrics(
+            metrics=metrics,
+            personas=self._options.get(CONF_PERSONAS, []),
+        )
+        metrics.extend(exposure_persona_metrics)
 
         forecast_daily = self._build_forecast_daily(
             forecast_days=forecast_days,
@@ -922,6 +1145,25 @@ class AuraSnapshotProvider:
             earthquake_data=earthquake_data,
             gdacs_events=gdacs_events,
         )
+        personas_meta: list[dict[str, Any]] = []
+        raw_personas = self._options.get(CONF_PERSONAS, [])
+        if isinstance(raw_personas, list):
+            for persona in raw_personas:
+                if not isinstance(persona, dict):
+                    continue
+                personas_meta.append(
+                    {
+                        "id": persona.get("id"),
+                        "name": persona.get("name"),
+                        "person_entity_id": persona.get("person_entity_id"),
+                        "skin_type": persona.get("skin_type"),
+                        "spf": persona.get("spf"),
+                        "shade_factor": persona.get("shade_factor"),
+                        "uv_sensitivity": persona.get("uv_sensitivity"),
+                        "heat_sensitivity": persona.get("heat_sensitivity"),
+                        "enabled": persona.get("enabled", True),
+                    }
+                )
 
         return {
             "meta": {
@@ -948,6 +1190,7 @@ class AuraSnapshotProvider:
                     "gdacs": "ok" if gdacs_err is None else gdacs_err,
                 },
                 "icons": icon_catalog,
+                "personas": personas_meta,
                 "ha_overrides": overrides,
                 "forecast_count": len(forecast_daily),
             },
@@ -2385,6 +2628,239 @@ class AuraSnapshotProvider:
             },
         ]
 
+    def _build_exposure_and_persona_metrics(
+        self,
+        *,
+        metrics: list[dict[str, Any]],
+        personas: Any,
+    ) -> list[dict[str, Any]]:
+        """Build rip-current/heat metrics and persona-specific exposure sensors."""
+        values = {item.get("entity_id"): item.get("value") for item in metrics}
+
+        wave_height = _optional_float(values.get("sensor.wave_height"))
+        wave_period = _optional_float(values.get("sensor.wave_period"))
+        wind_speed = _optional_float(values.get("sensor.wind_speed"))
+        rain_prob = _optional_float(values.get("sensor.precipitation_probability"))
+        if rain_prob is None:
+            rain_prob = _optional_float(values.get("sensor.rain_next_6h"))
+        apparent_temperature = _optional_float(values.get("sensor.apparent_temperature"))
+        humidity = _optional_float(values.get("sensor.humidity"))
+        uv_index = _optional_float(values.get("sensor.uv_index"))
+
+        rip_index: int | None = None
+        rip_risk = "unavailable"
+        if (
+            wave_height is not None
+            and wave_period is not None
+            and wind_speed is not None
+            and rain_prob is not None
+        ):
+            rip_index = _rip_current_index(
+                wave_height_m=wave_height,
+                wave_period_s=wave_period,
+                wind_speed_kmh=wind_speed,
+                rain_probability_pct=rain_prob,
+            )
+            rip_risk = _risk_from_index(rip_index)
+
+        heat_index_c: float | None = None
+        wet_bulb_c: float | None = None
+        heat_stress_index: int | None = None
+        heat_stress_risk = "unavailable"
+        if apparent_temperature is not None and humidity is not None:
+            heat_index_c = _heat_index_c(apparent_temperature, humidity)
+            wet_bulb_c = _wet_bulb_c(apparent_temperature, humidity)
+            score = 0.0
+            if heat_index_c >= 54:
+                score = 100
+            elif heat_index_c >= 41:
+                score = 82 + (heat_index_c - 41) * 1.4
+            elif heat_index_c >= 32:
+                score = 58 + (heat_index_c - 32) * 2.1
+            elif heat_index_c >= 27:
+                score = 35 + (heat_index_c - 27) * 4.6
+            else:
+                score = max(0.0, (heat_index_c - 18) * 2.6)
+            heat_stress_index = max(0, min(100, int(round(score))))
+            heat_stress_risk = _risk_from_index(heat_stress_index)
+
+        result: list[dict[str, Any]] = [
+            {
+                "entity_id": "sensor.rip_current_risk",
+                "name": "Rip current risk",
+                "value": rip_risk,
+                "source": "internal_model",
+                "icon": "mdi:waves-arrow-right",
+            },
+            {
+                "entity_id": "sensor.rip_current_index",
+                "name": "Rip current index",
+                "value": rip_index if rip_index is not None else "unavailable",
+                "unit": "/100",
+                "source": "internal_model",
+                "icon": "mdi:chart-line",
+            },
+            {
+                "entity_id": "sensor.heat_stress_risk",
+                "name": "Heat stress risk",
+                "value": heat_stress_risk,
+                "source": "internal_model",
+                "icon": "mdi:thermometer-alert",
+            },
+            {
+                "entity_id": "sensor.heat_stress_index",
+                "name": "Heat stress index",
+                "value": heat_stress_index if heat_stress_index is not None else "unavailable",
+                "unit": "/100",
+                "source": "internal_model",
+                "icon": "mdi:chart-line",
+            },
+            {
+                "entity_id": "sensor.heat_index_c",
+                "name": "Heat index",
+                "value": heat_index_c if heat_index_c is not None else "unavailable",
+                "unit": "degC",
+                "source": "internal_model",
+                "icon": "mdi:thermometer-high",
+            },
+            {
+                "entity_id": "sensor.wet_bulb_c",
+                "name": "Wet bulb temperature",
+                "value": wet_bulb_c if wet_bulb_c is not None else "unavailable",
+                "unit": "degC",
+                "source": "internal_model",
+                "icon": "mdi:thermometer-water",
+            },
+        ]
+
+        if not isinstance(personas, list):
+            return result
+
+        for persona in personas:
+            if not isinstance(persona, dict):
+                continue
+            if persona.get("enabled") is False:
+                continue
+
+            persona_id = str(persona.get("id") or "").strip()
+            if not persona_id:
+                continue
+            persona_name = str(persona.get("name") or persona_id).strip() or persona_id
+            skin_type = _safe_int(persona.get("skin_type"), 3)
+            if skin_type < 1:
+                skin_type = 1
+            if skin_type > 6:
+                skin_type = 6
+            spf = _clamp_float(persona.get("spf", 1.0), 1.0, 1.0, 100.0)
+            shade_factor = _clamp_float(persona.get("shade_factor", 1.0), 1.0, 0.2, 5.0)
+            uv_sensitivity = _clamp_float(
+                persona.get("uv_sensitivity", 1.0), 1.0, 0.5, 2.5
+            )
+            heat_sensitivity = _clamp_float(
+                persona.get("heat_sensitivity", 1.0), 1.0, 0.6, 1.8
+            )
+            person_entity_id = persona.get("person_entity_id")
+            if not isinstance(person_entity_id, str) or not person_entity_id.strip():
+                person_entity_id = None
+            else:
+                person_entity_id = person_entity_id.strip()
+
+            presence = "unknown"
+            if person_entity_id is not None:
+                state = self.hass.states.get(person_entity_id)
+                if state is None:
+                    presence = "unavailable"
+                else:
+                    presence = str(state.state or "unknown")
+
+            burn_minutes = (
+                _sunburn_minutes(
+                    uv_index=uv_index,
+                    skin_type=skin_type,
+                    spf=spf,
+                    shade_factor=shade_factor,
+                    uv_sensitivity=uv_sensitivity,
+                )
+                if uv_index is not None
+                else None
+            )
+            burn_risk = _sunburn_risk(burn_minutes)
+
+            persona_heat_index: int | None = None
+            persona_heat_risk = "unavailable"
+            if heat_stress_index is not None:
+                persona_heat_index = max(
+                    0, min(100, int(round(heat_stress_index * heat_sensitivity)))
+                )
+                persona_heat_risk = _risk_from_index(persona_heat_index)
+
+            persona_prefix = f"sensor.aura_{persona_id}"
+            result.extend(
+                [
+                    {
+                        "entity_id": f"{persona_prefix}_sunburn_time_min",
+                        "name": f"{persona_name} sunburn time",
+                        "value": burn_minutes if burn_minutes is not None else "unavailable",
+                        "unit": "min",
+                        "source": "persona_profile",
+                        "icon": "mdi:white-balance-sunny",
+                        "source_entity": person_entity_id,
+                    },
+                    {
+                        "entity_id": f"{persona_prefix}_sunburn_risk",
+                        "name": f"{persona_name} sunburn risk",
+                        "value": burn_risk,
+                        "source": "persona_profile",
+                        "icon": "mdi:sun-thermometer-outline",
+                        "source_entity": person_entity_id,
+                    },
+                    {
+                        "entity_id": f"{persona_prefix}_heat_stress_index",
+                        "name": f"{persona_name} heat stress index",
+                        "value": (
+                            persona_heat_index
+                            if persona_heat_index is not None
+                            else "unavailable"
+                        ),
+                        "unit": "/100",
+                        "source": "persona_profile",
+                        "icon": "mdi:thermometer-alert",
+                        "source_entity": person_entity_id,
+                    },
+                    {
+                        "entity_id": f"{persona_prefix}_heat_stress_risk",
+                        "name": f"{persona_name} heat stress risk",
+                        "value": persona_heat_risk,
+                        "source": "persona_profile",
+                        "icon": "mdi:thermometer-alert",
+                        "source_entity": person_entity_id,
+                    },
+                    {
+                        "entity_id": f"{persona_prefix}_presence",
+                        "name": f"{persona_name} presence",
+                        "value": presence,
+                        "source": "ha_person"
+                        if person_entity_id is not None
+                        else "persona_profile",
+                        "icon": "mdi:account",
+                        "source_entity": person_entity_id,
+                    },
+                    {
+                        "entity_id": f"{persona_prefix}_profile",
+                        "name": f"{persona_name} profile",
+                        "value": (
+                            f"skin_type={skin_type}, spf={spf:g}, shade={shade_factor:g}, "
+                            f"uv_sens={uv_sensitivity:g}, heat_sens={heat_sensitivity:g}"
+                        ),
+                        "source": "persona_profile",
+                        "icon": "mdi:account-details-outline",
+                        "source_entity": person_entity_id,
+                    },
+                ]
+            )
+
+        return result
+
     def _select_hour_index(self, hourly: dict[str, Any]) -> int:
         """Pick index matching current local time or return 0."""
         times = hourly.get("time")
@@ -3000,6 +3476,9 @@ class AuraSnapshotProvider:
                 "jellyfish": _noto_icon_bundle("1f41f"),
                 "tiger_mosquito": _noto_icon_bundle("1f99f"),
                 "ticks": _noto_icon_bundle("1f41b"),
+                "rip_current": _noto_icon_bundle("1f30a"),
+                "heat_stress": _noto_icon_bundle("1f321_fe0f"),
+                "sunburn": _noto_icon_bundle("1f31e"),
                 "earthquakes": _noto_icon_bundle("1f30b"),
                 "wildfire": _noto_icon_bundle("1f525"),
                 "hazards": _noto_icon_bundle("1f6a8"),

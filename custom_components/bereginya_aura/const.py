@@ -1,7 +1,7 @@
 """Constants for the Beregynya AURA integration."""
 
 DOMAIN = "bereginya_aura"
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 
 API_ENDPOINT = "/api/bereginya_aura/v1/snapshot"
 FRONTEND_STATIC_BASE = "/bereginya-aura"
@@ -17,6 +17,7 @@ CONF_REFRESH_SECONDS = "refresh_seconds"
 CONF_FORECAST_DAYS = "forecast_days"
 CONF_TIMEZONES = "timezones"
 CONF_SOURCES = "sources"
+CONF_PERSONAS = "personas"
 
 SOURCE_MODE_INTERNAL = "internal"
 SOURCE_MODE_HYBRID = "hybrid"
@@ -104,6 +105,12 @@ SOURCE_KEY_ALIASES = {
     "tick_last_report": "sensor.tick_last_report",
     "tick_source": "sensor.tick_source",
     "tick_icon_url": "sensor.tick_icon_url",
+    "rip_current_risk": "sensor.rip_current_risk",
+    "rip_current_index": "sensor.rip_current_index",
+    "heat_stress_risk": "sensor.heat_stress_risk",
+    "heat_stress_index": "sensor.heat_stress_index",
+    "heat_index_c": "sensor.heat_index_c",
+    "wet_bulb_c": "sensor.wet_bulb_c",
     "earthquake_risk": "sensor.earthquake_risk",
     "earthquake_index": "sensor.earthquake_index",
     "earthquake_events_24h": "sensor.earthquake_events_24h",

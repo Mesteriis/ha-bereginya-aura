@@ -14,6 +14,9 @@ entities. It can optionally reuse selected HA entities in `hybrid` mode.
 - Pulls tick observations around home point from iNaturalist API
 - Pulls local earthquake activity around home point from USGS Earthquake Catalog API
 - Pulls global wildfire + multi-hazard events from GDACS RSS feed
+- Calculates rip current risk from wave/period/wind/rain
+- Calculates heat stress index + wet-bulb estimate
+- Supports persona profiles from YAML (`skin_type`, `spf`, sensitivities) with per-person sunburn/heat sensors
 - Exposes icon catalog for all metrics in snapshot `meta.icons.entities`
 - Adds `icon_url` + `icon_gif_url` for each entity (GIF preferred support)
 - Supports extra timezone clocks via `timezones: "UTC+01,UTC+03,UTC-05"`
@@ -60,6 +63,19 @@ Response:
       "elevation_m": 10.0,
       "timezone": "Europe/Madrid"
     },
+    "personas": [
+      {
+        "id": "mama",
+        "name": "Mama",
+        "person_entity_id": "person.mama",
+        "skin_type": 2,
+        "spf": 30.0,
+        "shade_factor": 1.0,
+        "uv_sensitivity": 1.1,
+        "heat_sensitivity": 1.0,
+        "enabled": true
+      }
+    ],
     "fetch": {
       "weather": "ok",
       "marine": "ok",
@@ -146,6 +162,23 @@ bereginya_aura:
   refresh_seconds: 600
   forecast_days: 7
   timezones: "UTC+01,UTC+03,UTC-05"
+  personas:
+    - id: mama
+      name: Mama
+      person_entity_id: person.mama
+      skin_type: 2
+      spf: 30
+      shade_factor: 1.0
+      uv_sensitivity: 1.1
+      heat_sensitivity: 1.0
+    - id: papa
+      name: Papa
+      person_entity_id: person.papa
+      skin_type: 3
+      spf: 15
+      shade_factor: 1.0
+      uv_sensitivity: 1.0
+      heat_sensitivity: 1.15
   sources:
     precipitation_probability: sensor.precipitation_probability
     uv_index: sensor.uv_index
