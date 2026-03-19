@@ -41,6 +41,7 @@ Response:
     "source": "bereginya_aura_internal_api",
     "source_mode": "internal",
     "refresh_seconds": 900,
+    "forecast_days": 7,
     "generated_at": "2026-03-19T20:00:00+00:00",
     "home_position": {
       "latitude": 41.123456,
@@ -57,7 +58,8 @@ Response:
       "attempted": 0,
       "applied": 0,
       "missing": 0
-    }
+    },
+    "forecast_count": 7
   },
   "entities": [
     {
@@ -66,6 +68,21 @@ Response:
       "value": 14.3,
       "unit": "degC",
       "source": "internal_api"
+    }
+  ],
+  "forecast_daily": [
+    {
+      "date": "2026-03-20",
+      "temp_min": 12.3,
+      "temp_max": 19.4,
+      "rain_probability_max": 35,
+      "rain_sum_mm": 1.1,
+      "uv_max": 5.7,
+      "sea_temp_avg": 14.8,
+      "aqi_max": 42,
+      "allergy_index": 31,
+      "asthma_risk": "low",
+      "beach_score": 7
     }
   ]
 }
@@ -85,10 +102,12 @@ Advanced (`hybrid` mode with optional HA sources):
 bereginya_aura:
   source_mode: hybrid
   refresh_seconds: 600
+  forecast_days: 7
   sources:
     precipitation_probability: sensor.precipitation_probability
     uv_index: sensor.uv_index
     sea_temperature: sensor.sea_temperature_openmeteo
+    wave_period: sensor.wave_period
     aqi: sensor.air_quality_european_aqi
     pollen_total: sensor.pollen_total
     pollen_ambrosia: sensor.pollen_ragweed

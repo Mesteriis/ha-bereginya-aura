@@ -117,6 +117,19 @@ class BeregynyaAuraCard extends HTMLElement {
           `- \`${entity.entity_id}\`: **${entity.value}${unit}**${source}${sourceEntity}`,
         );
       }
+
+      const daily = Array.isArray(this._snapshot.forecast_daily)
+        ? this._snapshot.forecast_daily
+        : [];
+      if (daily.length > 0) {
+        lines.push("");
+        lines.push(`## Forecast ${daily.length}d`);
+        for (const day of daily) {
+          lines.push(
+            `- \`${day.date}\`: ${day.temp_min}/${day.temp_max} degC, rain ${day.rain_probability_max}% (${day.rain_sum_mm} mm), UV ${day.uv_max}, sea ${day.sea_temp_avg} degC, AQI ${day.aqi_max}, allergy ${day.allergy_index}/100, asthma ${day.asthma_risk}, beach ${day.beach_score}/10 (${day.beach_flag})`,
+          );
+        }
+      }
     }
 
     this._markdownCard.setConfig({

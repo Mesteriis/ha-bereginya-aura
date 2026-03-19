@@ -14,6 +14,7 @@ DATA_OPTIONS = "options"
 
 CONF_SOURCE_MODE = "source_mode"
 CONF_REFRESH_SECONDS = "refresh_seconds"
+CONF_FORECAST_DAYS = "forecast_days"
 CONF_SOURCES = "sources"
 
 SOURCE_MODE_INTERNAL = "internal"
@@ -27,6 +28,7 @@ SUPPORTED_SOURCE_MODES = {
 
 DEFAULT_SOURCE_MODE = SOURCE_MODE_INTERNAL
 DEFAULT_REFRESH_SECONDS = 900
+DEFAULT_FORECAST_DAYS = 7
 
 SERVICE_REFRESH_SNAPSHOT = "refresh_snapshot"
 
@@ -38,6 +40,7 @@ SOURCE_KEY_ALIASES = {
     "precipitation_probability": "sensor.precipitation_probability",
     "precipitation": "sensor.precipitation",
     "uv_index": "sensor.uv_index",
+    "rain_next_6h": "sensor.rain_next_6h",
     "wind_speed": "sensor.wind_speed",
     "pressure": "sensor.pressure",
     "humidity": "sensor.humidity",
@@ -45,6 +48,7 @@ SOURCE_KEY_ALIASES = {
     "sea_temperature_3h": "sensor.sea_temperature_openmeteo_3h",
     "sea_temperature_6h": "sensor.sea_temperature_openmeteo_6h",
     "wave_height": "sensor.wave_height",
+    "wave_period": "sensor.wave_period",
     "pollen_total": "sensor.pollen_total",
     "pollen_birch": "sensor.pollen_birch",
     "pollen_alder": "sensor.pollen_alder",
@@ -54,6 +58,8 @@ SOURCE_KEY_ALIASES = {
     "pollen_ambrosia": "sensor.pollen_ambrosia",
     "pollen_mugwort": "sensor.pollen_mugwort",
     "ambrosia_risk": "sensor.ambrosia_risk",
+    "allergy_index": "sensor.allergy_index",
+    "asthma_risk": "sensor.asthma_risk",
     "aqi": "sensor.air_quality_european_aqi",
     "air_quality_european_aqi": "sensor.air_quality_european_aqi",
     "pm25": "sensor.air_quality_pm25",

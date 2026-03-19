@@ -13,9 +13,11 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.util import dt as dt_util
 
 from .const import (
+    CONF_FORECAST_DAYS,
     CONF_REFRESH_SECONDS,
     CONF_SOURCE_MODE,
     CONF_SOURCES,
+    DEFAULT_FORECAST_DAYS,
     DEFAULT_REFRESH_SECONDS,
     DEFAULT_SOURCE_MODE,
     INVALID_HA_STATES,
@@ -46,6 +48,13 @@ def normalize_options(raw_options: dict[str, Any] | None) -> dict[str, Any]:
         refresh_seconds = DEFAULT_REFRESH_SECONDS
     refresh_seconds = max(30, min(refresh_seconds, 86_400))
 
+    forecast_days = options.get(CONF_FORECAST_DAYS, DEFAULT_FORECAST_DAYS)
+    try:
+        forecast_days = int(forecast_days)
+    except (TypeError, ValueError):
+        forecast_days = DEFAULT_FORECAST_DAYS
+    forecast_days = max(1, min(forecast_days, 7))
+
     sources: dict[str, str] = {}
     raw_sources = options.get(CONF_SOURCES, {})
     if isinstance(raw_sources, dict):
@@ -61,6 +70,7 @@ def normalize_options(raw_options: dict[str, Any] | None) -> dict[str, Any]:
     return {
         CONF_SOURCE_MODE: source_mode,
         CONF_REFRESH_SECONDS: refresh_seconds,
+        CONF_FORECAST_DAYS: forecast_days,
         CONF_SOURCES: sources,
     }
 
@@ -149,6 +159,49 @@ def _dust_level(dust: float) -> str:
     return "normal"
 
 
+def _allergy_index(pollen_total: float, dust: float, aqi: float) -> int:
+    """Compute compact 0..100 allergy index."""
+    score = pollen_total * 2.2 + max(dust - 15, 0) * 0.25 + max(aqi - 20, 0) * 0.6
+    return max(0, min(100, int(round(score))))
+
+
+def _asthma_risk(aqi: float, pm25: float, dust: float, pollen_total: float) -> str:
+    """Classify asthma risk."""
+    risk_score = (
+        max(aqi - 20, 0) * 0.8
+        + max(pm25 - 10, 0) * 1.4
+        + max(dust - 20, 0) * 0.3
+        + max(pollen_total - 20, 0) * 0.5
+    )
+    if risk_score >= 80:
+        return "very_high"
+    if risk_score >= 50:
+        return "high"
+    if risk_score >= 25:
+        return "moderate"
+    return "low"
+
+
+def _daily_hourly_values(hourly: dict[str, Any], key: str, day: str) -> list[float]:
+    """Extract numeric values for one day from hourly arrays."""
+    times = hourly.get("time")
+    values = hourly.get(key)
+    if not isinstance(times, list) or not isinstance(values, list):
+        return []
+
+    result: list[float] = []
+    for idx, timestamp in enumerate(times):
+        if idx >= len(values):
+            break
+        if not isinstance(timestamp, str) or not timestamp.startswith(day):
+            continue
+        value = values[idx]
+        if value is None:
+            continue
+        result.append(_safe_float(value, 0.0))
+    return result
+
+
 class AuraSnapshotProvider:
     """Fetch, compute and cache the Beregynya AURA transcript."""
 
@@ -194,6 +247,7 @@ class AuraSnapshotProvider:
         longitude = float(self.hass.config.longitude)
         elevation = float(self.hass.config.elevation)
         timezone = self.hass.config.time_zone
+        forecast_days = int(self._options[CONF_FORECAST_DAYS])
 
         weather_url = _build_url(
             _OPEN_METEO_WEATHER,
@@ -205,8 +259,13 @@ class AuraSnapshotProvider:
                     "weather_code,uv_index,wind_speed_10m,surface_pressure,"
                     "relative_humidity_2m"
                 ),
+                "daily": (
+                    "weather_code,temperature_2m_max,temperature_2m_min,"
+                    "precipitation_probability_max,precipitation_sum,uv_index_max,"
+                    "wind_speed_10m_max"
+                ),
                 "timezone": timezone,
-                "forecast_days": 2,
+                "forecast_days": forecast_days,
             },
         )
         marine_url = _build_url(
@@ -216,7 +275,7 @@ class AuraSnapshotProvider:
                 "longitude": longitude,
                 "hourly": "wave_height,wave_direction,wave_period,sea_surface_temperature",
                 "timezone": timezone,
-                "forecast_days": 2,
+                "forecast_days": forecast_days,
             },
         )
         air_url = _build_url(
@@ -230,7 +289,7 @@ class AuraSnapshotProvider:
                     "alder_pollen,olive_pollen,ragweed_pollen,mugwort_pollen"
                 ),
                 "timezone": timezone,
-                "forecast_days": 2,
+                "forecast_days": forecast_days,
             },
         )
 
@@ -248,6 +307,12 @@ class AuraSnapshotProvider:
             marine_data=marine_data,
             air_data=air_data,
         )
+        forecast_daily = self._build_forecast_daily(
+            forecast_days=forecast_days,
+            weather_data=weather_data,
+            marine_data=marine_data,
+            air_data=air_data,
+        )
         overrides = self._apply_ha_sources(metrics)
 
         return {
@@ -255,6 +320,7 @@ class AuraSnapshotProvider:
                 "source": "bereginya_aura_internal_api",
                 "source_mode": self._options[CONF_SOURCE_MODE],
                 "refresh_seconds": self._options[CONF_REFRESH_SECONDS],
+                "forecast_days": forecast_days,
                 "generated_at": datetime.now(tz=UTC).isoformat(),
                 "home_position": {
                     "latitude": round(latitude, 6),
@@ -268,8 +334,10 @@ class AuraSnapshotProvider:
                     "air_quality": "ok" if air_err is None else air_err,
                 },
                 "ha_overrides": overrides,
+                "forecast_count": len(forecast_daily),
             },
             "entities": metrics,
+            "forecast_daily": forecast_daily,
         }
 
     async def _async_fetch_json(self, url: str) -> tuple[dict[str, Any] | None, str | None]:
@@ -351,6 +419,19 @@ class AuraSnapshotProvider:
             ),
             fallback_rain,
         )
+        weather_rain = weather_hourly.get("precipitation_probability", [])
+        if isinstance(weather_rain, list) and weather_rain:
+            rain_window = weather_rain[weather_idx : weather_idx + 6]
+            rain_window_values = [
+                _safe_float(value, 0.0) for value in rain_window if value is not None
+            ]
+            rain_next_6h = (
+                int(round(max(rain_window_values)))
+                if rain_window_values
+                else precipitation_probability
+            )
+        else:
+            rain_next_6h = precipitation_probability
         precipitation = round(
             _safe_float(
                 _hourly_value(weather_hourly, "precipitation", weather_idx, fallback_rain / 30),
@@ -403,6 +484,9 @@ class AuraSnapshotProvider:
         )
         wave_height = round(
             _safe_float(_hourly_value(marine_hourly, "wave_height", marine_idx, 0.5), 0.5), 2
+        )
+        wave_period = round(
+            _safe_float(_hourly_value(marine_hourly, "wave_period", marine_idx, 4.0), 4.0), 1
         )
 
         aqi = _safe_int(_hourly_value(air_hourly, "european_aqi", air_idx, fallback_aqi), fallback_aqi)
@@ -466,6 +550,8 @@ class AuraSnapshotProvider:
             _safe_float(_hourly_value(air_hourly, "dust", air_idx + 6, dust_now), dust_now), 1
         )
         dust_level = _dust_level(dust_now)
+        allergy_index = _allergy_index(float(pollen_total), float(dust_now), float(aqi))
+        asthma_risk = _asthma_risk(float(aqi), float(pm25), float(dust_now), float(pollen_total))
 
         beach_flag = "green"
         if wave_height > 2.0 or wind_speed > 40:
@@ -565,6 +651,13 @@ class AuraSnapshotProvider:
                 "source": "internal_api",
             },
             {
+                "entity_id": "sensor.rain_next_6h",
+                "name": "Rain probability next 6h",
+                "value": rain_next_6h,
+                "unit": "%",
+                "source": "internal_api",
+            },
+            {
                 "entity_id": "sensor.wind_speed",
                 "name": "Wind speed",
                 "value": wind_speed,
@@ -611,6 +704,13 @@ class AuraSnapshotProvider:
                 "name": "Wave height",
                 "value": wave_height,
                 "unit": "m",
+                "source": "internal_api",
+            },
+            {
+                "entity_id": "sensor.wave_period",
+                "name": "Wave period",
+                "value": wave_period,
+                "unit": "s",
                 "source": "internal_api",
             },
             {
@@ -666,6 +766,19 @@ class AuraSnapshotProvider:
                 "entity_id": "sensor.ambrosia_risk",
                 "name": "Ambrosia risk",
                 "value": ambrosia_risk,
+                "source": "internal_api",
+            },
+            {
+                "entity_id": "sensor.allergy_index",
+                "name": "Allergy index",
+                "value": allergy_index,
+                "unit": "/100",
+                "source": "internal_api",
+            },
+            {
+                "entity_id": "sensor.asthma_risk",
+                "name": "Asthma risk",
+                "value": asthma_risk,
                 "source": "internal_api",
             },
             {
@@ -775,6 +888,141 @@ class AuraSnapshotProvider:
                 "source": "internal_api",
             },
         ]
+
+    def _build_forecast_daily(
+        self,
+        *,
+        forecast_days: int,
+        weather_data: dict[str, Any] | None,
+        marine_data: dict[str, Any] | None,
+        air_data: dict[str, Any] | None,
+    ) -> list[dict[str, Any]]:
+        """Build 1..7 day forecast summary."""
+        weather_daily = weather_data.get("daily", {}) if isinstance(weather_data, dict) else {}
+        weather_days = weather_daily.get("time")
+        if not isinstance(weather_days, list) or not weather_days:
+            return []
+
+        marine_hourly = marine_data.get("hourly", {}) if isinstance(marine_data, dict) else {}
+        air_hourly = air_data.get("hourly", {}) if isinstance(air_data, dict) else {}
+
+        result: list[dict[str, Any]] = []
+        for idx, day in enumerate(weather_days[:forecast_days]):
+            if not isinstance(day, str):
+                continue
+
+            temp_max = round(
+                _safe_float(_hourly_value(weather_daily, "temperature_2m_max", idx, 0.0), 0.0), 1
+            )
+            temp_min = round(
+                _safe_float(_hourly_value(weather_daily, "temperature_2m_min", idx, 0.0), 0.0), 1
+            )
+            rain_prob_max = _safe_int(
+                _hourly_value(weather_daily, "precipitation_probability_max", idx, 0), 0
+            )
+            rain_sum = round(
+                _safe_float(_hourly_value(weather_daily, "precipitation_sum", idx, 0.0), 0.0), 1
+            )
+            uv_max = round(
+                _safe_float(_hourly_value(weather_daily, "uv_index_max", idx, 0.0), 0.0), 1
+            )
+            wind_max = round(
+                _safe_float(_hourly_value(weather_daily, "wind_speed_10m_max", idx, 0.0), 0.0), 1
+            )
+            weather_code = _safe_int(_hourly_value(weather_daily, "weather_code", idx, 0), 0)
+
+            sea_values = _daily_hourly_values(marine_hourly, "sea_surface_temperature", day)
+            wave_values = _daily_hourly_values(marine_hourly, "wave_height", day)
+            wave_period_values = _daily_hourly_values(marine_hourly, "wave_period", day)
+            aqi_values = _daily_hourly_values(air_hourly, "european_aqi", day)
+            pm25_values = _daily_hourly_values(air_hourly, "pm2_5", day)
+            dust_values = _daily_hourly_values(air_hourly, "dust", day)
+            pollen_grass = _daily_hourly_values(air_hourly, "grass_pollen", day)
+            pollen_birch = _daily_hourly_values(air_hourly, "birch_pollen", day)
+            pollen_alder = _daily_hourly_values(air_hourly, "alder_pollen", day)
+            pollen_olive = _daily_hourly_values(air_hourly, "olive_pollen", day)
+            pollen_ragweed = _daily_hourly_values(air_hourly, "ragweed_pollen", day)
+            pollen_mugwort = _daily_hourly_values(air_hourly, "mugwort_pollen", day)
+
+            sea_temp_avg = round(sum(sea_values) / len(sea_values), 1) if sea_values else 0.0
+            wave_height_max = round(max(wave_values), 2) if wave_values else 0.0
+            wave_period_avg = (
+                round(sum(wave_period_values) / len(wave_period_values), 1)
+                if wave_period_values
+                else 0.0
+            )
+            aqi_max = int(round(max(aqi_values))) if aqi_values else 0
+            pm25_max = round(max(pm25_values), 1) if pm25_values else 0.0
+            dust_max = round(max(dust_values), 1) if dust_values else 0.0
+            pollen_total = int(
+                round(
+                    (
+                        (sum(pollen_grass) / len(pollen_grass) if pollen_grass else 0.0)
+                        + (sum(pollen_birch) / len(pollen_birch) if pollen_birch else 0.0)
+                        + (sum(pollen_alder) / len(pollen_alder) if pollen_alder else 0.0)
+                        + (sum(pollen_olive) / len(pollen_olive) if pollen_olive else 0.0)
+                        + (sum(pollen_ragweed) / len(pollen_ragweed) if pollen_ragweed else 0.0)
+                        + (sum(pollen_mugwort) / len(pollen_mugwort) if pollen_mugwort else 0.0)
+                    )
+                )
+            )
+
+            allergy_index = _allergy_index(float(pollen_total), float(dust_max), float(aqi_max))
+            asthma_risk = _asthma_risk(
+                float(aqi_max), float(pm25_max), float(dust_max), float(pollen_total)
+            )
+
+            beach_flag = "green"
+            if wave_height_max > 2.0 or wind_max > 40:
+                beach_flag = "red"
+            elif wave_height_max > 1.2 or wind_max > 25:
+                beach_flag = "yellow"
+
+            beach_score = 10
+            if beach_flag == "red":
+                beach_score -= 5
+            elif beach_flag == "yellow":
+                beach_score -= 2
+            if sea_temp_avg < 18:
+                beach_score -= 2
+            elif sea_temp_avg < 20:
+                beach_score -= 1
+            elif sea_temp_avg >= 24:
+                beach_score += 1
+            if uv_max > 10:
+                beach_score -= 2
+            elif uv_max > 8:
+                beach_score -= 1
+            if rain_prob_max > 60:
+                beach_score -= 2
+            elif rain_prob_max > 30:
+                beach_score -= 1
+            beach_score = max(0, min(10, beach_score))
+
+            result.append(
+                {
+                    "date": day,
+                    "weather_code": weather_code,
+                    "temp_min": temp_min,
+                    "temp_max": temp_max,
+                    "rain_probability_max": rain_prob_max,
+                    "rain_sum_mm": rain_sum,
+                    "uv_max": uv_max,
+                    "wind_max_kmh": wind_max,
+                    "sea_temp_avg": sea_temp_avg,
+                    "wave_height_max": wave_height_max,
+                    "wave_period_avg": wave_period_avg,
+                    "aqi_max": aqi_max,
+                    "dust_max": dust_max,
+                    "pollen_total_est": pollen_total,
+                    "allergy_index": allergy_index,
+                    "asthma_risk": asthma_risk,
+                    "beach_flag": beach_flag,
+                    "beach_score": beach_score,
+                }
+            )
+
+        return result
 
     def _apply_ha_sources(self, metrics: list[dict[str, Any]]) -> dict[str, int]:
         """Apply optional HA entity mappings on top of internal metrics."""
