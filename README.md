@@ -12,6 +12,8 @@ entities. It can optionally reuse selected HA entities in `hybrid` mode.
 - Pulls official jellyfish/beach state for nearest beach from PlatgesCat (ACA)
 - Pulls tiger mosquito observations around home point from Mosquito Alert API
 - Pulls tick observations around home point from iNaturalist API
+- Pulls local earthquake activity around home point from USGS Earthquake Catalog API
+- Pulls global wildfire + multi-hazard events from GDACS RSS feed
 - Exposes icon catalog for all metrics in snapshot `meta.icons.entities`
 - Adds `icon_url` + `icon_gif_url` for each entity (GIF preferred support)
 - Supports extra timezone clocks via `timezones: "UTC+01,UTC+03,UTC-05"`
@@ -64,7 +66,9 @@ Response:
       "air_quality": "ok",
       "jellyfish": "ok",
       "tiger_mosquito": "ok",
-      "ticks": "ok"
+      "ticks": "ok",
+      "earthquakes": "ok",
+      "gdacs": "ok"
     },
     "timezones": [
       {"timezone":"UTC+01","time":"22:05"},
@@ -154,6 +158,9 @@ bereginya_aura:
     mosquito_index: sensor.mosquito_index
     tick_risk: sensor.tick_risk
     tick_index: sensor.tick_index
+    earthquake_risk: sensor.earthquake_risk
+    wildfire_risk: sensor.wildfire_risk
+    hazard_top_event_type: sensor.hazard_top_event_type
     beach_comfort_index: sensor.beach_comfort_index
 ```
 

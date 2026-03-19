@@ -6,8 +6,10 @@ import asyncio
 import math
 import re
 from datetime import UTC, datetime, timedelta
+from email.utils import parsedate_to_datetime
 from typing import Any
 from urllib.parse import urlencode
+from xml.etree import ElementTree as ET
 
 from aiohttp import ClientError
 from homeassistant.core import HomeAssistant, State
@@ -47,6 +49,8 @@ _MOSQUITO_ALERT_OBSERVATIONS = "https://api.mosquitoalert.com/v1/observations/"
 _TIGER_MOSQUITO_TAXON_ID = 112
 _INAT_OBSERVATIONS = "https://api.inaturalist.org/v1/observations"
 _INAT_TICKS_TAXON_ID = 51672
+_USGS_EQ_QUERY = "https://earthquake.usgs.gov/fdsnws/event/1/query"
+_GDACS_RSS = "https://www.gdacs.org/xml/rss.xml"
 _UTC_TOKEN_PATTERN = re.compile(r"^UTC([+-])(\d{1,2})$")
 _NOTO_EMOJI_BASE = "https://fonts.gstatic.com/s/e/notoemoji/latest"
 
@@ -116,6 +120,39 @@ _METRIC_ICON_EMOJI: dict[str, str] = {
     "sensor.tick_last_report": "1f41b",
     "sensor.tick_source": "1f41b",
     "sensor.tick_icon_url": "1f41b",
+    "sensor.earthquake_risk": "1f30b",
+    "sensor.earthquake_index": "1f30b",
+    "sensor.earthquake_events_24h": "1f30b",
+    "sensor.earthquake_events_7d": "1f30b",
+    "sensor.earthquake_max_magnitude_7d": "1f30b",
+    "sensor.earthquake_nearest_distance_km": "1f30b",
+    "sensor.earthquake_nearest_magnitude": "1f30b",
+    "sensor.earthquake_latest_time": "1f30b",
+    "sensor.earthquake_latest_place": "1f30b",
+    "sensor.earthquake_tsunami_events_24h": "1f30b",
+    "sensor.earthquake_event_url": "1f30b",
+    "sensor.earthquake_source": "1f30b",
+    "sensor.wildfire_risk": "1f525",
+    "sensor.wildfire_index": "1f525",
+    "sensor.wildfire_active_events_global": "1f525",
+    "sensor.wildfire_high_alert_events_global": "1f525",
+    "sensor.wildfire_max_alert_level": "1f525",
+    "sensor.wildfire_nearest_distance_km": "1f525",
+    "sensor.wildfire_nearest_country": "1f525",
+    "sensor.wildfire_nearest_title": "1f525",
+    "sensor.wildfire_nearest_link": "1f525",
+    "sensor.wildfire_icon_url": "1f525",
+    "sensor.wildfire_source": "1f525",
+    "sensor.hazard_active_events_global": "1f6a8",
+    "sensor.hazard_high_alert_events_global": "1f6a8",
+    "sensor.hazard_top_event_type": "1f6a8",
+    "sensor.hazard_top_event_alert": "1f6a8",
+    "sensor.hazard_top_event_title": "1f6a8",
+    "sensor.hazard_top_event_country": "1f6a8",
+    "sensor.hazard_top_event_distance_km": "1f6a8",
+    "sensor.hazard_top_event_icon_url": "1f6a8",
+    "sensor.hazard_last_update": "1f6a8",
+    "sensor.hazard_source": "1f6a8",
 }
 
 
@@ -285,6 +322,33 @@ def _coerce_state_value(raw_state: str, template_value: Any) -> Any:
     if isinstance(template_value, float):
         return round(_safe_float(raw_state, template_value), 2)
     return raw_state
+
+
+def _risk_from_index(index: int) -> str:
+    """Map 0..100 index to compact risk buckets."""
+    if index >= 80:
+        return "very_high"
+    if index >= 60:
+        return "high"
+    if index >= 35:
+        return "moderate"
+    if index >= 15:
+        return "low"
+    return "very_low"
+
+
+def _alert_level_rank(level: str | None) -> int:
+    """Map alert level text to comparable rank."""
+    value = str(level or "").strip().lower()
+    if value == "red":
+        return 4
+    if value == "orange":
+        return 3
+    if value == "green":
+        return 2
+    if value == "yellow":
+        return 2
+    return 1
 
 
 def _noto_icon_bundle(emoji_code: str) -> dict[str, str]:
@@ -770,6 +834,10 @@ class AuraSnapshotProvider:
             latitude=latitude, longitude=longitude
         )
         tick_task = self._async_fetch_tick_data(latitude=latitude, longitude=longitude)
+        earthquake_task = self._async_fetch_earthquake_data(
+            latitude=latitude, longitude=longitude
+        )
+        gdacs_task = self._async_fetch_gdacs_events()
         (
             (weather_data, weather_err),
             (marine_data, marine_err),
@@ -777,6 +845,8 @@ class AuraSnapshotProvider:
             (jellyfish_data, jellyfish_err),
             (mosquito_data, mosquito_err),
             (tick_data, tick_err),
+            (earthquake_data, earthquake_err),
+            (gdacs_events, gdacs_err),
         ) = await asyncio.gather(
             weather_task,
             marine_task,
@@ -784,6 +854,8 @@ class AuraSnapshotProvider:
             jellyfish_task,
             mosquito_task,
             tick_task,
+            earthquake_task,
+            gdacs_task,
         )
 
         metrics = self._build_internal_metrics(
@@ -805,9 +877,25 @@ class AuraSnapshotProvider:
             metrics=metrics,
             tick_data=tick_data,
         )
+        earthquake_metrics = self._build_earthquake_metrics(
+            earthquake_data=earthquake_data,
+        )
+        wildfire_metrics = self._build_wildfire_metrics(
+            latitude=latitude,
+            longitude=longitude,
+            gdacs_events=gdacs_events,
+        )
+        hazard_metrics = self._build_hazard_metrics(
+            latitude=latitude,
+            longitude=longitude,
+            gdacs_events=gdacs_events,
+        )
         metrics.extend(jellyfish_metrics)
         metrics.extend(mosquito_metrics)
         metrics.extend(tick_metrics)
+        metrics.extend(earthquake_metrics)
+        metrics.extend(wildfire_metrics)
+        metrics.extend(hazard_metrics)
 
         forecast_daily = self._build_forecast_daily(
             forecast_days=forecast_days,
@@ -831,6 +919,8 @@ class AuraSnapshotProvider:
             jellyfish_data=jellyfish_data,
             mosquito_data=mosquito_data,
             tick_data=tick_data,
+            earthquake_data=earthquake_data,
+            gdacs_events=gdacs_events,
         )
 
         return {
@@ -854,6 +944,8 @@ class AuraSnapshotProvider:
                     "jellyfish": "ok" if jellyfish_err is None else jellyfish_err,
                     "tiger_mosquito": "ok" if mosquito_err is None else mosquito_err,
                     "ticks": "ok" if tick_err is None else tick_err,
+                    "earthquakes": "ok" if earthquake_err is None else earthquake_err,
+                    "gdacs": "ok" if gdacs_err is None else gdacs_err,
                 },
                 "icons": icon_catalog,
                 "ha_overrides": overrides,
@@ -874,6 +966,223 @@ class AuraSnapshotProvider:
             return payload, None
         except (TimeoutError, ClientError, ValueError) as err:
             return None, str(err)
+
+    async def _async_fetch_text(self, url: str) -> tuple[str | None, str | None]:
+        """Fetch text payload from remote API."""
+        try:
+            async with self._session.get(url, timeout=25) as response:
+                response.raise_for_status()
+                payload = await response.text()
+            if not isinstance(payload, str) or not payload.strip():
+                return None, "empty_payload"
+            return payload, None
+        except (TimeoutError, ClientError, ValueError) as err:
+            return None, str(err)
+
+    async def _async_fetch_earthquake_data(
+        self, *, latitude: float, longitude: float
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        """Fetch recent earthquake activity around home point from USGS."""
+        now = datetime.now(tz=UTC)
+        start_24h = (now - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        start_7d = (now - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        end_time = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        common = {
+            "format": "geojson",
+            "latitude": f"{latitude:.6f}",
+            "longitude": f"{longitude:.6f}",
+            "maxradiuskm": 700,
+            "orderby": "time",
+            "limit": 200,
+        }
+        url_24h = _build_url(
+            _USGS_EQ_QUERY,
+            {
+                **common,
+                "starttime": start_24h,
+                "endtime": end_time,
+            },
+        )
+        url_7d = _build_url(
+            _USGS_EQ_QUERY,
+            {
+                **common,
+                "starttime": start_7d,
+                "endtime": end_time,
+            },
+        )
+        (data_24h, err_24h), (data_7d, err_7d) = await asyncio.gather(
+            self._async_fetch_json(url_24h),
+            self._async_fetch_json(url_7d),
+        )
+        if not isinstance(data_24h, dict) and not isinstance(data_7d, dict):
+            return None, err_24h or err_7d or "earthquake_api_unavailable"
+
+        features_24h = data_24h.get("features", []) if isinstance(data_24h, dict) else []
+        features_7d = data_7d.get("features", []) if isinstance(data_7d, dict) else []
+        if not isinstance(features_24h, list):
+            features_24h = []
+        if not isinstance(features_7d, list):
+            features_7d = []
+
+        count_24h = _safe_int(
+            data_24h.get("metadata", {}).get("count") if isinstance(data_24h, dict) else len(features_24h),
+            len(features_24h),
+        )
+        count_7d = _safe_int(
+            data_7d.get("metadata", {}).get("count") if isinstance(data_7d, dict) else len(features_7d),
+            len(features_7d),
+        )
+
+        max_mag_7d: float | None = None
+        nearest_dist_km: float | None = None
+        nearest_mag: float | None = None
+        nearest_url: str | None = None
+        latest_time_ms: int | None = None
+        latest_place: str | None = None
+
+        for feature in features_7d:
+            if not isinstance(feature, dict):
+                continue
+            properties = feature.get("properties")
+            geometry = feature.get("geometry")
+            if not isinstance(properties, dict):
+                continue
+            mag = _optional_float(properties.get("mag"), 1)
+            if mag is not None and (max_mag_7d is None or mag > max_mag_7d):
+                max_mag_7d = mag
+
+            raw_time = properties.get("time")
+            if isinstance(raw_time, (int, float)):
+                ts = int(raw_time)
+                if latest_time_ms is None or ts > latest_time_ms:
+                    latest_time_ms = ts
+                    latest_place = str(properties.get("place") or "unknown")
+
+            if not isinstance(geometry, dict):
+                continue
+            coordinates = geometry.get("coordinates")
+            if not isinstance(coordinates, list) or len(coordinates) < 2:
+                continue
+            ev_lon = _optional_float(coordinates[0])
+            ev_lat = _optional_float(coordinates[1])
+            if ev_lon is None or ev_lat is None:
+                continue
+            dist_km = _haversine_km(latitude, longitude, ev_lat, ev_lon)
+            if nearest_dist_km is None or dist_km < nearest_dist_km:
+                nearest_dist_km = round(dist_km, 1)
+                nearest_mag = mag
+                nearest_url = properties.get("url")
+
+        tsunami_24h = 0
+        for feature in features_24h:
+            if not isinstance(feature, dict):
+                continue
+            properties = feature.get("properties")
+            if not isinstance(properties, dict):
+                continue
+            tsunami_flag = _safe_int(properties.get("tsunami"), 0)
+            if tsunami_flag == 1:
+                tsunami_24h += 1
+
+        latest_iso = "unknown"
+        if latest_time_ms is not None:
+            latest_iso = datetime.fromtimestamp(latest_time_ms / 1000, tz=UTC).isoformat()
+
+        partial_errors = [err for err in (err_24h, err_7d) if err is not None]
+        error_text = "; ".join(partial_errors) if partial_errors else None
+        return (
+            {
+                "count_24h": count_24h,
+                "count_7d": count_7d,
+                "max_mag_7d": max_mag_7d,
+                "nearest_distance_km": nearest_dist_km,
+                "nearest_magnitude": nearest_mag,
+                "nearest_event_url": nearest_url,
+                "latest_time": latest_iso,
+                "latest_place": latest_place or "unknown",
+                "tsunami_events_24h": tsunami_24h,
+            },
+            error_text,
+        )
+
+    async def _async_fetch_gdacs_events(self) -> tuple[list[dict[str, Any]] | None, str | None]:
+        """Fetch GDACS events feed and parse current event metadata."""
+        xml_text, xml_err = await self._async_fetch_text(_GDACS_RSS)
+        if not isinstance(xml_text, str):
+            return None, xml_err or "gdacs_feed_unavailable"
+
+        ns = {
+            "gdacs": "http://www.gdacs.org",
+            "geo": "http://www.w3.org/2003/01/geo/wgs84_pos#",
+            "georss": "http://www.georss.org/georss",
+        }
+        try:
+            root = ET.fromstring(xml_text.lstrip("\ufeff\r\n\t "))
+        except ET.ParseError as err:
+            return None, f"xml_parse_error:{err}"
+
+        events: list[dict[str, Any]] = []
+        for item in root.findall("./channel/item"):
+            title = str(item.findtext("title", default="")).strip()
+            link = str(item.findtext("link", default="")).strip()
+            pub_date_raw = str(item.findtext("pubDate", default="")).strip()
+            event_type = str(item.findtext("gdacs:eventtype", default="", namespaces=ns)).strip().upper()
+            alert_level = str(item.findtext("gdacs:alertlevel", default="", namespaces=ns)).strip().lower()
+            country = str(item.findtext("gdacs:country", default="", namespaces=ns)).strip()
+            icon_url = str(item.findtext("gdacs:icon", default="", namespaces=ns)).strip()
+            severity = str(item.findtext("gdacs:severity", default="", namespaces=ns)).strip()
+            is_current = str(
+                item.findtext("gdacs:iscurrent", default="false", namespaces=ns)
+            ).strip().lower() == "true"
+
+            pub_iso = None
+            pub_ts = 0
+            if pub_date_raw:
+                try:
+                    parsed = parsedate_to_datetime(pub_date_raw)
+                    if parsed.tzinfo is None:
+                        parsed = parsed.replace(tzinfo=UTC)
+                    parsed = parsed.astimezone(UTC)
+                    pub_iso = parsed.isoformat()
+                    pub_ts = int(parsed.timestamp())
+                except (TypeError, ValueError, OverflowError):
+                    pub_iso = None
+                    pub_ts = 0
+
+            lat = None
+            lon = None
+            point = str(item.findtext("georss:point", default="", namespaces=ns)).strip()
+            if point:
+                parts = [part for part in point.split(" ") if part]
+                if len(parts) >= 2:
+                    lat = _optional_float(parts[0], 4)
+                    lon = _optional_float(parts[1], 4)
+            if lat is None or lon is None:
+                lat = _optional_float(item.findtext("geo:Point/geo:lat", default="", namespaces=ns), 4)
+                lon = _optional_float(item.findtext("geo:Point/geo:long", default="", namespaces=ns), 4)
+
+            if not event_type:
+                continue
+
+            events.append(
+                {
+                    "event_type": event_type,
+                    "alert_level": alert_level if alert_level else "unknown",
+                    "is_current": is_current,
+                    "title": title or "unknown",
+                    "country": country or "unknown",
+                    "link": link or None,
+                    "icon_url": icon_url or None,
+                    "severity": severity or None,
+                    "latitude": lat,
+                    "longitude": lon,
+                    "published_at": pub_iso,
+                    "published_ts": pub_ts,
+                }
+            )
+
+        return events, None
 
     async def _async_fetch_jellyfish_data(
         self, *, latitude: float, longitude: float
@@ -1609,6 +1918,473 @@ class AuraSnapshotProvider:
             mosquito_index,
         )
 
+    def _build_earthquake_metrics(
+        self,
+        *,
+        earthquake_data: dict[str, Any] | None,
+    ) -> list[dict[str, Any]]:
+        """Build earthquake metrics from USGS observations near home point."""
+        source = "usgs_api" if isinstance(earthquake_data, dict) else "unavailable"
+
+        count_24h: Any = "unavailable"
+        count_7d: Any = "unavailable"
+        max_mag_7d: Any = "unavailable"
+        nearest_distance_km: Any = "unavailable"
+        nearest_magnitude: Any = "unavailable"
+        latest_time: Any = "unavailable"
+        latest_place: Any = "unavailable"
+        tsunami_24h: Any = "unavailable"
+        event_url: Any = "unavailable"
+        eq_index: Any = "unavailable"
+        eq_risk: Any = "unavailable"
+
+        if isinstance(earthquake_data, dict):
+            count_24h = _safe_int(earthquake_data.get("count_24h"), 0)
+            count_7d = _safe_int(earthquake_data.get("count_7d"), 0)
+            max_mag = _optional_float(earthquake_data.get("max_mag_7d"), 1)
+            nearest_dist = _optional_float(earthquake_data.get("nearest_distance_km"), 1)
+            nearest_mag = _optional_float(earthquake_data.get("nearest_magnitude"), 1)
+            latest_time = str(earthquake_data.get("latest_time") or "unknown")
+            latest_place = str(earthquake_data.get("latest_place") or "unknown")
+            tsunami_24h = _safe_int(earthquake_data.get("tsunami_events_24h"), 0)
+            event_url = str(earthquake_data.get("nearest_event_url") or "unavailable")
+
+            score = min(count_7d * 3, 30)
+            if max_mag is not None:
+                max_mag_7d = max_mag
+                if max_mag >= 7.0:
+                    score += 45
+                elif max_mag >= 6.0:
+                    score += 35
+                elif max_mag >= 5.0:
+                    score += 25
+                elif max_mag >= 4.0:
+                    score += 15
+                elif max_mag >= 3.0:
+                    score += 8
+
+            if nearest_dist is not None:
+                nearest_distance_km = nearest_dist
+                nearest_magnitude = nearest_mag if nearest_mag is not None else "unavailable"
+                if nearest_dist <= 100:
+                    score += 30
+                elif nearest_dist <= 300:
+                    score += 20
+                elif nearest_dist <= 700:
+                    score += 10
+
+            score += min(tsunami_24h * 12, 24)
+            eq_index = max(0, min(100, score))
+            eq_risk = _risk_from_index(eq_index)
+
+        return [
+            {
+                "entity_id": "sensor.earthquake_risk",
+                "name": "Earthquake risk",
+                "value": eq_risk,
+                "source": source,
+                "icon": "mdi:pulse",
+            },
+            {
+                "entity_id": "sensor.earthquake_index",
+                "name": "Earthquake index",
+                "value": eq_index,
+                "unit": "/100",
+                "source": source,
+                "icon": "mdi:chart-line",
+            },
+            {
+                "entity_id": "sensor.earthquake_events_24h",
+                "name": "Earthquakes 24h",
+                "value": count_24h,
+                "source": source,
+                "icon": "mdi:clock-alert-outline",
+            },
+            {
+                "entity_id": "sensor.earthquake_events_7d",
+                "name": "Earthquakes 7d",
+                "value": count_7d,
+                "source": source,
+                "icon": "mdi:calendar-week",
+            },
+            {
+                "entity_id": "sensor.earthquake_max_magnitude_7d",
+                "name": "Earthquake max magnitude 7d",
+                "value": max_mag_7d,
+                "unit": "M",
+                "source": source,
+                "icon": "mdi:magnitude",
+            },
+            {
+                "entity_id": "sensor.earthquake_nearest_distance_km",
+                "name": "Nearest earthquake distance",
+                "value": nearest_distance_km,
+                "unit": "km",
+                "source": source,
+                "icon": "mdi:map-marker-distance",
+            },
+            {
+                "entity_id": "sensor.earthquake_nearest_magnitude",
+                "name": "Nearest earthquake magnitude",
+                "value": nearest_magnitude,
+                "unit": "M",
+                "source": source,
+                "icon": "mdi:chart-bubble",
+            },
+            {
+                "entity_id": "sensor.earthquake_latest_time",
+                "name": "Latest earthquake time",
+                "value": latest_time,
+                "source": source,
+                "icon": "mdi:clock-outline",
+            },
+            {
+                "entity_id": "sensor.earthquake_latest_place",
+                "name": "Latest earthquake place",
+                "value": latest_place,
+                "source": source,
+                "icon": "mdi:map-marker",
+            },
+            {
+                "entity_id": "sensor.earthquake_tsunami_events_24h",
+                "name": "Tsunami-flagged earthquakes 24h",
+                "value": tsunami_24h,
+                "source": source,
+                "icon": "mdi:waves-arrow-up",
+            },
+            {
+                "entity_id": "sensor.earthquake_event_url",
+                "name": "Nearest earthquake event URL",
+                "value": event_url,
+                "source": source,
+                "icon": "mdi:link-variant",
+            },
+            {
+                "entity_id": "sensor.earthquake_source",
+                "name": "Earthquake source",
+                "value": source,
+                "source": source,
+                "icon": "mdi:database-search-outline",
+            },
+        ]
+
+    def _build_wildfire_metrics(
+        self,
+        *,
+        latitude: float,
+        longitude: float,
+        gdacs_events: list[dict[str, Any]] | None,
+    ) -> list[dict[str, Any]]:
+        """Build wildfire metrics from GDACS current wildfire events."""
+        source = "gdacs_rss" if isinstance(gdacs_events, list) else "unavailable"
+
+        wildfire_risk: Any = "unavailable"
+        wildfire_index: Any = "unavailable"
+        active_events: Any = "unavailable"
+        high_alert_events: Any = "unavailable"
+        max_alert_level: Any = "unavailable"
+        nearest_distance_km: Any = "unavailable"
+        nearest_country: Any = "unavailable"
+        nearest_title: Any = "unavailable"
+        nearest_link: Any = "unavailable"
+        nearest_icon_url: Any = "unavailable"
+
+        if isinstance(gdacs_events, list):
+            wildfire_events = [
+                event
+                for event in gdacs_events
+                if event.get("is_current") is True and event.get("event_type") == "WF"
+            ]
+            active_events = len(wildfire_events)
+            high_alert_events = sum(
+                1
+                for event in wildfire_events
+                if str(event.get("alert_level") or "").lower() in {"orange", "red"}
+            )
+
+            if wildfire_events:
+                max_alert_rank = max(
+                    _alert_level_rank(str(event.get("alert_level"))) for event in wildfire_events
+                )
+                if max_alert_rank >= 4:
+                    max_alert_level = "red"
+                elif max_alert_rank >= 3:
+                    max_alert_level = "orange"
+                elif max_alert_rank >= 2:
+                    max_alert_level = "green"
+                else:
+                    max_alert_level = "unknown"
+
+                nearest_event: dict[str, Any] | None = None
+                nearest_dist = 100_000.0
+                for event in wildfire_events:
+                    ev_lat = _optional_float(event.get("latitude"))
+                    ev_lon = _optional_float(event.get("longitude"))
+                    if ev_lat is None or ev_lon is None:
+                        continue
+                    dist = _haversine_km(latitude, longitude, ev_lat, ev_lon)
+                    if dist < nearest_dist:
+                        nearest_dist = dist
+                        nearest_event = event
+
+                score = min(active_events * 2, 26) + min(high_alert_events * 12, 32)
+                score += _alert_level_rank(str(max_alert_level)) * 8
+
+                if nearest_event is not None:
+                    nearest_distance_km = round(nearest_dist, 1)
+                    nearest_country = str(nearest_event.get("country") or "unknown")
+                    nearest_title = str(nearest_event.get("title") or "unknown")
+                    nearest_link = str(nearest_event.get("link") or "unavailable")
+                    nearest_icon_url = str(nearest_event.get("icon_url") or "unavailable")
+                    if nearest_dist <= 500:
+                        score += 30
+                    elif nearest_dist <= 1500:
+                        score += 20
+                    elif nearest_dist <= 3500:
+                        score += 10
+
+                wildfire_index = max(0, min(100, score))
+                wildfire_risk = _risk_from_index(wildfire_index)
+            else:
+                wildfire_index = 0
+                wildfire_risk = "very_low"
+                max_alert_level = "none"
+
+        return [
+            {
+                "entity_id": "sensor.wildfire_risk",
+                "name": "Wildfire risk",
+                "value": wildfire_risk,
+                "source": source,
+                "icon": "mdi:fire-alert",
+            },
+            {
+                "entity_id": "sensor.wildfire_index",
+                "name": "Wildfire index",
+                "value": wildfire_index,
+                "unit": "/100",
+                "source": source,
+                "icon": "mdi:chart-line",
+            },
+            {
+                "entity_id": "sensor.wildfire_active_events_global",
+                "name": "Wildfire active events (global)",
+                "value": active_events,
+                "source": source,
+                "icon": "mdi:fire",
+            },
+            {
+                "entity_id": "sensor.wildfire_high_alert_events_global",
+                "name": "Wildfire high-alert events (global)",
+                "value": high_alert_events,
+                "source": source,
+                "icon": "mdi:alert-octagon",
+            },
+            {
+                "entity_id": "sensor.wildfire_max_alert_level",
+                "name": "Wildfire max alert level",
+                "value": max_alert_level,
+                "source": source,
+                "icon": "mdi:alarm-light-outline",
+            },
+            {
+                "entity_id": "sensor.wildfire_nearest_distance_km",
+                "name": "Nearest wildfire distance",
+                "value": nearest_distance_km,
+                "unit": "km",
+                "source": source,
+                "icon": "mdi:map-marker-distance",
+            },
+            {
+                "entity_id": "sensor.wildfire_nearest_country",
+                "name": "Nearest wildfire country",
+                "value": nearest_country,
+                "source": source,
+                "icon": "mdi:flag-outline",
+            },
+            {
+                "entity_id": "sensor.wildfire_nearest_title",
+                "name": "Nearest wildfire title",
+                "value": nearest_title,
+                "source": source,
+                "icon": "mdi:text-box-outline",
+            },
+            {
+                "entity_id": "sensor.wildfire_nearest_link",
+                "name": "Nearest wildfire report URL",
+                "value": nearest_link,
+                "source": source,
+                "icon": "mdi:link-variant",
+            },
+            {
+                "entity_id": "sensor.wildfire_icon_url",
+                "name": "Nearest wildfire icon URL",
+                "value": nearest_icon_url,
+                "source": source,
+                "icon": "mdi:image-outline",
+            },
+            {
+                "entity_id": "sensor.wildfire_source",
+                "name": "Wildfire source",
+                "value": source,
+                "source": source,
+                "icon": "mdi:database-search-outline",
+            },
+        ]
+
+    def _build_hazard_metrics(
+        self,
+        *,
+        latitude: float,
+        longitude: float,
+        gdacs_events: list[dict[str, Any]] | None,
+    ) -> list[dict[str, Any]]:
+        """Build multi-hazard summary metrics from GDACS current events."""
+        source = "gdacs_rss" if isinstance(gdacs_events, list) else "unavailable"
+
+        active_total: Any = "unavailable"
+        high_alert_total: Any = "unavailable"
+        top_event_type: Any = "unavailable"
+        top_event_alert: Any = "unavailable"
+        top_event_title: Any = "unavailable"
+        top_event_country: Any = "unavailable"
+        top_event_distance_km: Any = "unavailable"
+        top_event_icon_url: Any = "unavailable"
+        last_update: Any = "unavailable"
+
+        if isinstance(gdacs_events, list):
+            current_events = [event for event in gdacs_events if event.get("is_current") is True]
+            active_total = len(current_events)
+            high_alert_total = sum(
+                1
+                for event in current_events
+                if str(event.get("alert_level") or "").lower() in {"orange", "red"}
+            )
+
+            if current_events:
+                latest_ts = max(
+                    _safe_int(event.get("published_ts"), 0) for event in current_events
+                )
+                if latest_ts > 0:
+                    last_update = datetime.fromtimestamp(latest_ts, tz=UTC).isoformat()
+                else:
+                    last_update = "unknown"
+
+                top_event: dict[str, Any] | None = None
+                top_key = (-1, -100_000.0, -1)
+                for event in current_events:
+                    event_alert = str(event.get("alert_level") or "unknown")
+                    rank = _alert_level_rank(event_alert)
+                    ev_lat = _optional_float(event.get("latitude"))
+                    ev_lon = _optional_float(event.get("longitude"))
+                    dist = None
+                    if ev_lat is not None and ev_lon is not None:
+                        dist = _haversine_km(latitude, longitude, ev_lat, ev_lon)
+                    dist_key = -(dist if dist is not None else 100_000.0)
+                    pub_ts = _safe_int(event.get("published_ts"), 0)
+                    key = (rank, dist_key, pub_ts)
+                    if key > top_key:
+                        top_key = key
+                        top_event = event
+
+                if top_event is not None:
+                    top_event_type = str(top_event.get("event_type") or "unknown")
+                    top_event_alert = str(top_event.get("alert_level") or "unknown")
+                    top_event_title = str(top_event.get("title") or "unknown")
+                    top_event_country = str(top_event.get("country") or "unknown")
+                    top_event_icon_url = str(top_event.get("icon_url") or "unavailable")
+                    ev_lat = _optional_float(top_event.get("latitude"))
+                    ev_lon = _optional_float(top_event.get("longitude"))
+                    if ev_lat is not None and ev_lon is not None:
+                        top_event_distance_km = round(
+                            _haversine_km(latitude, longitude, ev_lat, ev_lon),
+                            1,
+                        )
+            else:
+                active_total = 0
+                high_alert_total = 0
+                top_event_type = "none"
+                top_event_alert = "none"
+                top_event_title = "none"
+                top_event_country = "none"
+                top_event_distance_km = "unavailable"
+                top_event_icon_url = "unavailable"
+                last_update = "unknown"
+
+        return [
+            {
+                "entity_id": "sensor.hazard_active_events_global",
+                "name": "Hazard active events (global)",
+                "value": active_total,
+                "source": source,
+                "icon": "mdi:alert-circle-outline",
+            },
+            {
+                "entity_id": "sensor.hazard_high_alert_events_global",
+                "name": "Hazard high-alert events (global)",
+                "value": high_alert_total,
+                "source": source,
+                "icon": "mdi:alert-octagon-outline",
+            },
+            {
+                "entity_id": "sensor.hazard_top_event_type",
+                "name": "Top hazard event type",
+                "value": top_event_type,
+                "source": source,
+                "icon": "mdi:shape-outline",
+            },
+            {
+                "entity_id": "sensor.hazard_top_event_alert",
+                "name": "Top hazard event alert",
+                "value": top_event_alert,
+                "source": source,
+                "icon": "mdi:alarm-light-outline",
+            },
+            {
+                "entity_id": "sensor.hazard_top_event_title",
+                "name": "Top hazard event title",
+                "value": top_event_title,
+                "source": source,
+                "icon": "mdi:text-box-outline",
+            },
+            {
+                "entity_id": "sensor.hazard_top_event_country",
+                "name": "Top hazard event country",
+                "value": top_event_country,
+                "source": source,
+                "icon": "mdi:flag-outline",
+            },
+            {
+                "entity_id": "sensor.hazard_top_event_distance_km",
+                "name": "Top hazard event distance",
+                "value": top_event_distance_km,
+                "unit": "km",
+                "source": source,
+                "icon": "mdi:map-marker-distance",
+            },
+            {
+                "entity_id": "sensor.hazard_top_event_icon_url",
+                "name": "Top hazard event icon URL",
+                "value": top_event_icon_url,
+                "source": source,
+                "icon": "mdi:image-outline",
+            },
+            {
+                "entity_id": "sensor.hazard_last_update",
+                "name": "Hazard feed last update",
+                "value": last_update,
+                "source": source,
+                "icon": "mdi:clock-outline",
+            },
+            {
+                "entity_id": "sensor.hazard_source",
+                "name": "Hazard source",
+                "value": source,
+                "source": source,
+                "icon": "mdi:database-search-outline",
+            },
+        ]
+
     def _select_hour_index(self, hourly: dict[str, Any]) -> int:
         """Pick index matching current local time or return 0."""
         times = hourly.get("time")
@@ -2137,6 +2913,14 @@ class AuraSnapshotProvider:
             elif entity_id == "sensor.tiger_mosquito_icon_url":
                 if isinstance(value, str) and value.startswith(("http://", "https://")):
                     metric["icon_external_url"] = value
+            elif entity_id in {
+                "sensor.wildfire_icon_url",
+                "sensor.hazard_top_event_icon_url",
+                "sensor.earthquake_event_url",
+                "sensor.wildfire_nearest_link",
+            }:
+                if isinstance(value, str) and value.startswith(("http://", "https://")):
+                    metric["icon_external_url"] = value
             elif entity_id == "sensor.jellyfish_icon_code":
                 if isinstance(value, str) and value not in {"", "unknown", "unavailable"}:
                     metric["icon_external_code"] = value
@@ -2170,6 +2954,8 @@ class AuraSnapshotProvider:
         jellyfish_data: dict[str, Any] | None,
         mosquito_data: dict[str, Any] | None,
         tick_data: dict[str, Any] | None,
+        earthquake_data: dict[str, Any] | None,
+        gdacs_events: list[dict[str, Any]] | None,
     ) -> dict[str, Any]:
         """Build icon catalog for external reuse."""
         weather_code: int | None = None
@@ -2214,6 +3000,9 @@ class AuraSnapshotProvider:
                 "jellyfish": _noto_icon_bundle("1f41f"),
                 "tiger_mosquito": _noto_icon_bundle("1f99f"),
                 "ticks": _noto_icon_bundle("1f41b"),
+                "earthquakes": _noto_icon_bundle("1f30b"),
+                "wildfire": _noto_icon_bundle("1f525"),
+                "hazards": _noto_icon_bundle("1f6a8"),
             },
             "entities": entity_icons,
         }
@@ -2236,6 +3025,52 @@ class AuraSnapshotProvider:
                 "external_icon_url": tick_data.get("icon_url"),
                 "source": "iNaturalist",
                 **_noto_icon_bundle("1f41b"),
+            }
+        if isinstance(earthquake_data, dict):
+            catalog["earthquakes"] = {
+                "source": "USGS",
+                "count_24h": earthquake_data.get("count_24h"),
+                "count_7d": earthquake_data.get("count_7d"),
+                "max_magnitude_7d": earthquake_data.get("max_mag_7d"),
+                "nearest_distance_km": earthquake_data.get("nearest_distance_km"),
+                "event_url": earthquake_data.get("nearest_event_url"),
+                **_noto_icon_bundle("1f30b"),
+            }
+        if isinstance(gdacs_events, list):
+            current_events = [
+                event for event in gdacs_events if isinstance(event, dict) and event.get("is_current") is True
+            ]
+            wf_events = [event for event in current_events if event.get("event_type") == "WF"]
+            top_hazard_icon = None
+            top_hazard_alert = "unknown"
+            if current_events:
+                top_event = max(
+                    current_events,
+                    key=lambda event: (
+                        _alert_level_rank(str(event.get("alert_level"))),
+                        _safe_int(event.get("published_ts"), 0),
+                    ),
+                )
+                top_hazard_icon = top_event.get("icon_url")
+                top_hazard_alert = top_event.get("alert_level")
+
+            catalog["wildfire"] = {
+                "source": "GDACS",
+                "active_events_global": len(wf_events),
+                "high_alert_events_global": sum(
+                    1
+                    for event in wf_events
+                    if str(event.get("alert_level") or "").lower() in {"orange", "red"}
+                ),
+                "top_icon_url": wf_events[0].get("icon_url") if wf_events else None,
+                **_noto_icon_bundle("1f525"),
+            }
+            catalog["hazards"] = {
+                "source": "GDACS",
+                "active_events_global": len(current_events),
+                "top_alert_level": top_hazard_alert,
+                "top_icon_url": top_hazard_icon,
+                **_noto_icon_bundle("1f6a8"),
             }
 
         if forecast_daily:

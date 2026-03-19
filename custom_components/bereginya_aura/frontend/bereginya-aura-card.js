@@ -11,6 +11,7 @@ const I18N = {
     homeLongitude: "\u0414\u043E\u043B\u0433\u043E\u0442\u0430 \u0434\u043E\u043C\u0430",
     fetchMain: "\u041F\u043E\u043B\u0443\u0447\u0435\u043D\u0438\u0435 weather/marine/air",
     fetchExtra: "\u041F\u043E\u043B\u0443\u0447\u0435\u043D\u0438\u0435 jellyfish/mosquito/ticks",
+    fetchHazards: "\u041F\u043E\u043B\u0443\u0447\u0435\u043D\u0438\u0435 earthquakes/gdacs",
     haOverrides: "HA overrides \u043F\u0440\u0438\u043C\u0435\u043D\u0435\u043D\u043E",
     timezones: "\u0427\u0430\u0441\u043E\u0432\u044B\u0435 \u0437\u043E\u043D\u044B",
     entityTranscript: "\u0422\u0440\u0430\u043D\u0441\u043A\u0440\u0438\u043F\u0442 \u0441\u0443\u0449\u043D\u043E\u0441\u0442\u0435\u0439",
@@ -29,6 +30,7 @@ const I18N = {
     homeLongitude: "Home longitude",
     fetchMain: "Fetch weather/marine/air",
     fetchExtra: "Fetch jellyfish/mosquito/ticks",
+    fetchHazards: "Fetch earthquakes/gdacs",
     haOverrides: "HA overrides applied",
     timezones: "Timezones",
     entityTranscript: "Entity Transcript",
@@ -47,6 +49,7 @@ const I18N = {
     homeLongitude: "\u0414\u043E\u0432\u0433\u043E\u0442\u0430 \u0434\u043E\u043C\u0443",
     fetchMain: "\u041E\u0442\u0440\u0438\u043C\u0430\u043D\u043D\u044F weather/marine/air",
     fetchExtra: "\u041E\u0442\u0440\u0438\u043C\u0430\u043D\u043D\u044F jellyfish/mosquito/ticks",
+    fetchHazards: "\u041E\u0442\u0440\u0438\u043C\u0430\u043D\u043D\u044F earthquakes/gdacs",
     haOverrides: "HA overrides \u0437\u0430\u0441\u0442\u043E\u0441\u043E\u0432\u0430\u043D\u043E",
     timezones: "\u0427\u0430\u0441\u043E\u0432\u0456 \u043F\u043E\u044F\u0441\u0438",
     entityTranscript: "\u0422\u0440\u0430\u043D\u0441\u043A\u0440\u0438\u043F\u0442 \u0441\u0443\u0442\u043D\u043E\u0441\u0442\u0435\u0439",
@@ -65,6 +68,7 @@ const I18N = {
     homeLongitude: "Longitud de casa",
     fetchMain: "Fetch weather/marine/air",
     fetchExtra: "Fetch jellyfish/mosquito/ticks",
+    fetchHazards: "Fetch earthquakes/gdacs",
     haOverrides: "HA overrides aplicados",
     timezones: "Zonas horarias",
     entityTranscript: "Transcripci\xF3n de entidades",
@@ -231,6 +235,11 @@ class BeregynyaAuraCard extends HTMLElement {
       lines.push(
         `- ${this._t("fetchExtra")}: \`${this._value(fetch.jellyfish)}\` / \`${this._value(fetch.tiger_mosquito)}\` / \`${this._value(fetch.ticks)}\``
       );
+      if (fetch.earthquakes !== void 0 || fetch.gdacs !== void 0) {
+        lines.push(
+          `- ${this._t("fetchHazards")}: \`${this._value(fetch.earthquakes)}\` / \`${this._value(fetch.gdacs)}\``
+        );
+      }
       if (meta.ha_overrides) {
         lines.push(
           `- ${this._t("haOverrides")}: \`${this._value(meta.ha_overrides.applied)}\` / \`${this._value(meta.ha_overrides.attempted)}\``

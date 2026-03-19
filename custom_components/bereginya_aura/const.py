@@ -1,7 +1,7 @@
 """Constants for the Beregynya AURA integration."""
 
 DOMAIN = "bereginya_aura"
-VERSION = "0.2.1"
+VERSION = "0.3.0"
 
 API_ENDPOINT = "/api/bereginya_aura/v1/snapshot"
 FRONTEND_STATIC_BASE = "/bereginya-aura"
@@ -104,4 +104,37 @@ SOURCE_KEY_ALIASES = {
     "tick_last_report": "sensor.tick_last_report",
     "tick_source": "sensor.tick_source",
     "tick_icon_url": "sensor.tick_icon_url",
+    "earthquake_risk": "sensor.earthquake_risk",
+    "earthquake_index": "sensor.earthquake_index",
+    "earthquake_events_24h": "sensor.earthquake_events_24h",
+    "earthquake_events_7d": "sensor.earthquake_events_7d",
+    "earthquake_max_magnitude_7d": "sensor.earthquake_max_magnitude_7d",
+    "earthquake_nearest_distance_km": "sensor.earthquake_nearest_distance_km",
+    "earthquake_nearest_magnitude": "sensor.earthquake_nearest_magnitude",
+    "earthquake_latest_time": "sensor.earthquake_latest_time",
+    "earthquake_latest_place": "sensor.earthquake_latest_place",
+    "earthquake_tsunami_events_24h": "sensor.earthquake_tsunami_events_24h",
+    "earthquake_event_url": "sensor.earthquake_event_url",
+    "earthquake_source": "sensor.earthquake_source",
+    "wildfire_risk": "sensor.wildfire_risk",
+    "wildfire_index": "sensor.wildfire_index",
+    "wildfire_active_events_global": "sensor.wildfire_active_events_global",
+    "wildfire_high_alert_events_global": "sensor.wildfire_high_alert_events_global",
+    "wildfire_max_alert_level": "sensor.wildfire_max_alert_level",
+    "wildfire_nearest_distance_km": "sensor.wildfire_nearest_distance_km",
+    "wildfire_nearest_country": "sensor.wildfire_nearest_country",
+    "wildfire_nearest_title": "sensor.wildfire_nearest_title",
+    "wildfire_nearest_link": "sensor.wildfire_nearest_link",
+    "wildfire_icon_url": "sensor.wildfire_icon_url",
+    "wildfire_source": "sensor.wildfire_source",
+    "hazard_active_events_global": "sensor.hazard_active_events_global",
+    "hazard_high_alert_events_global": "sensor.hazard_high_alert_events_global",
+    "hazard_top_event_type": "sensor.hazard_top_event_type",
+    "hazard_top_event_alert": "sensor.hazard_top_event_alert",
+    "hazard_top_event_title": "sensor.hazard_top_event_title",
+    "hazard_top_event_country": "sensor.hazard_top_event_country",
+    "hazard_top_event_distance_km": "sensor.hazard_top_event_distance_km",
+    "hazard_top_event_icon_url": "sensor.hazard_top_event_icon_url",
+    "hazard_last_update": "sensor.hazard_last_update",
+    "hazard_source": "sensor.hazard_source",
 }

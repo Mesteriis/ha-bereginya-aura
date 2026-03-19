@@ -12,6 +12,7 @@ type AuraDict = {
   homeLongitude: string;
   fetchMain: string;
   fetchExtra: string;
+  fetchHazards: string;
   haOverrides: string;
   timezones: string;
   entityTranscript: string;
@@ -32,6 +33,7 @@ const I18N: Record<AuraLang, AuraDict> = {
     homeLongitude: "Долгота дома",
     fetchMain: "Получение weather/marine/air",
     fetchExtra: "Получение jellyfish/mosquito/ticks",
+    fetchHazards: "Получение earthquakes/gdacs",
     haOverrides: "HA overrides применено",
     timezones: "Часовые зоны",
     entityTranscript: "Транскрипт сущностей",
@@ -50,6 +52,7 @@ const I18N: Record<AuraLang, AuraDict> = {
     homeLongitude: "Home longitude",
     fetchMain: "Fetch weather/marine/air",
     fetchExtra: "Fetch jellyfish/mosquito/ticks",
+    fetchHazards: "Fetch earthquakes/gdacs",
     haOverrides: "HA overrides applied",
     timezones: "Timezones",
     entityTranscript: "Entity Transcript",
@@ -68,6 +71,7 @@ const I18N: Record<AuraLang, AuraDict> = {
     homeLongitude: "Довгота дому",
     fetchMain: "Отримання weather/marine/air",
     fetchExtra: "Отримання jellyfish/mosquito/ticks",
+    fetchHazards: "Отримання earthquakes/gdacs",
     haOverrides: "HA overrides застосовано",
     timezones: "Часові пояси",
     entityTranscript: "Транскрипт сутностей",
@@ -86,6 +90,7 @@ const I18N: Record<AuraLang, AuraDict> = {
     homeLongitude: "Longitud de casa",
     fetchMain: "Fetch weather/marine/air",
     fetchExtra: "Fetch jellyfish/mosquito/ticks",
+    fetchHazards: "Fetch earthquakes/gdacs",
     haOverrides: "HA overrides aplicados",
     timezones: "Zonas horarias",
     entityTranscript: "Transcripción de entidades",
@@ -278,6 +283,11 @@ class BeregynyaAuraCard extends HTMLElement {
       lines.push(
         `- ${this._t("fetchExtra")}: \`${this._value(fetch.jellyfish)}\` / \`${this._value(fetch.tiger_mosquito)}\` / \`${this._value(fetch.ticks)}\``,
       );
+      if (fetch.earthquakes !== undefined || fetch.gdacs !== undefined) {
+        lines.push(
+          `- ${this._t("fetchHazards")}: \`${this._value(fetch.earthquakes)}\` / \`${this._value(fetch.gdacs)}\``,
+        );
+      }
 
       if (meta.ha_overrides) {
         lines.push(
