@@ -1,4 +1,25 @@
-const I18N = {
+type AuraLang = "ru" | "en" | "ua" | "es";
+
+type AuraDict = {
+  titleDefault: string;
+  loading: string;
+  apiError: string;
+  source: string;
+  mode: string;
+  refresh: string;
+  generatedAt: string;
+  homeLatitude: string;
+  homeLongitude: string;
+  fetchMain: string;
+  fetchExtra: string;
+  haOverrides: string;
+  timezones: string;
+  entityTranscript: string;
+  forecast: string;
+  unavailable: string;
+};
+
+const I18N: Record<AuraLang, AuraDict> = {
   ru: {
     titleDefault: "Берегиня AURA",
     loading: "Загрузка данных внутреннего API AURA...",
@@ -74,6 +95,14 @@ const I18N = {
 };
 
 class BeregynyaAuraCard extends HTMLElement {
+  private _config: Record<string, any> = {};
+  private _hass: any = null;
+  private _snapshot: any = null;
+  private _error: string | null = null;
+  private _lastRefreshTs = 0;
+  private _refreshPromise: Promise<void> | null = null;
+  private _markdownCard: any;
+
   static getStubConfig() {
     return {
       type: "custom:bereginya-aura",
@@ -83,18 +112,12 @@ class BeregynyaAuraCard extends HTMLElement {
 
   constructor() {
     super();
-    this._config = {};
-    this._hass = null;
-    this._snapshot = null;
-    this._error = null;
-    this._lastRefreshTs = 0;
-    this._refreshPromise = null;
     this.attachShadow({ mode: "open" });
     this._markdownCard = document.createElement("hui-markdown-card");
-    this.shadowRoot.appendChild(this._markdownCard);
+    this.shadowRoot?.appendChild(this._markdownCard);
   }
 
-  setConfig(config) {
+  setConfig(config: Record<string, any>) {
     if (!config || typeof config !== "object") {
       throw new Error("Invalid configuration");
     }
@@ -102,7 +125,7 @@ class BeregynyaAuraCard extends HTMLElement {
     this._render();
   }
 
-  set hass(hass) {
+  set hass(hass: any) {
     this._hass = hass;
     this._markdownCard.hass = hass;
     const now = Date.now();
@@ -115,7 +138,7 @@ class BeregynyaAuraCard extends HTMLElement {
     return 10;
   }
 
-  _lang() {
+  private _lang(): AuraLang {
     const configured = String(this._config.lang || this._hass?.language || "ru")
       .trim()
       .toLowerCase();
@@ -126,18 +149,18 @@ class BeregynyaAuraCard extends HTMLElement {
     return "ru";
   }
 
-  _t(key) {
+  private _t(key: keyof AuraDict): string {
     return I18N[this._lang()][key];
   }
 
-  _value(value) {
+  private _value(value: any): string {
     if (value === null || value === undefined || value === "unavailable") {
       return this._t("unavailable");
     }
     return String(value);
   }
 
-  async _refresh() {
+  private async _refresh() {
     if (!this._hass || this._refreshPromise) {
       return;
     }
@@ -149,12 +172,12 @@ class BeregynyaAuraCard extends HTMLElement {
 
     this._refreshPromise = this._hass
       .callApi("GET", endpoint)
-      .then((snapshot) => {
+      .then((snapshot: any) => {
         this._snapshot = snapshot;
         this._error = null;
         this._lastRefreshTs = Date.now();
       })
-      .catch((err) => {
+      .catch((err: any) => {
         this._error = err?.message || String(err);
       })
       .finally(() => {
@@ -163,7 +186,7 @@ class BeregynyaAuraCard extends HTMLElement {
       });
   }
 
-  _refreshIntervalMs() {
+  private _refreshIntervalMs() {
     const configured = Number(this._config.refresh_seconds ?? 120);
     if (!Number.isFinite(configured)) {
       return 120_000;
@@ -171,9 +194,9 @@ class BeregynyaAuraCard extends HTMLElement {
     return Math.max(15_000, configured * 1000);
   }
 
-  _render() {
+  private _render() {
     const title = this._config.title || this._t("titleDefault");
-    const lines = [`# ${title}`, ""];
+    const lines: string[] = [`# ${title}`, ""];
 
     if (this._error) {
       lines.push(`- ${this._t("apiError")}: \`${this._error}\``);
@@ -206,7 +229,7 @@ class BeregynyaAuraCard extends HTMLElement {
       const zones = Array.isArray(meta.timezones) ? meta.timezones : [];
       if (zones.length > 0) {
         const compact = zones
-          .map((z) => `${this._value(z.timezone)} ${this._value(z.time)}`)
+          .map((z: any) => `${this._value(z.timezone)} ${this._value(z.time)}`)
           .join(" | ");
         lines.push(`- ${this._t("timezones")}: ${compact}`);
       }
@@ -266,7 +289,7 @@ const _auraCards = [
 ];
 
 for (const card of _auraCards) {
-  if (!window.customCards.find((it) => it.type === card.type)) {
+  if (!window.customCards.find((it: any) => it.type === card.type)) {
     window.customCards.push(card);
   }
 }

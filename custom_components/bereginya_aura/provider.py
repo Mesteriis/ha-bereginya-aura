@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlencode
@@ -18,6 +19,8 @@ from .const import (
     CONF_REFRESH_SECONDS,
     CONF_SOURCE_MODE,
     CONF_SOURCES,
+    CONF_TIMEZONES,
+    DEFAULT_TIMEZONES,
     DEFAULT_FORECAST_DAYS,
     DEFAULT_REFRESH_SECONDS,
     DEFAULT_SOURCE_MODE,
@@ -42,6 +45,34 @@ _PLATGESCAT_DETAIL_BASE = (
 )
 _MOSQUITO_ALERT_OBSERVATIONS = "https://api.mosquitoalert.com/v1/observations/"
 _TIGER_MOSQUITO_TAXON_ID = 112
+_INAT_OBSERVATIONS = "https://api.inaturalist.org/v1/observations"
+_INAT_TICKS_TAXON_ID = 51672
+_UTC_TOKEN_PATTERN = re.compile(r"^UTC([+-])(\d{1,2})$")
+
+
+def _normalize_timezone_token(raw_token: str) -> str | None:
+    """Normalize timezone token from format UTC+-N to UTC+-HH."""
+    token = raw_token.strip().upper().replace(" ", "")
+    if not token:
+        return None
+    match = _UTC_TOKEN_PATTERN.fullmatch(token)
+    if not match:
+        return None
+    sign = match.group(1)
+    hour = int(match.group(2))
+    if hour > 14:
+        return None
+    return f"UTC{sign}{hour:02d}"
+
+
+def _timezone_token_to_offset(token: str) -> str | None:
+    """Convert UTC+HH token to +HH:MM offset."""
+    normalized = _normalize_timezone_token(token)
+    if normalized is None:
+        return None
+    sign = normalized[3]
+    hour = int(normalized[4:])
+    return f"{sign}{hour:02d}:00"
 
 
 def normalize_options(raw_options: dict[str, Any] | None) -> dict[str, Any]:
@@ -66,6 +97,20 @@ def normalize_options(raw_options: dict[str, Any] | None) -> dict[str, Any]:
         forecast_days = DEFAULT_FORECAST_DAYS
     forecast_days = max(1, min(forecast_days, 7))
 
+    timezone_tokens: list[str] = []
+    raw_timezones = options.get(CONF_TIMEZONES, DEFAULT_TIMEZONES)
+    if isinstance(raw_timezones, str):
+        timezone_tokens = [part for part in raw_timezones.split(",")]
+    elif isinstance(raw_timezones, list):
+        timezone_tokens = [str(part) for part in raw_timezones]
+    normalized_timezones: list[str] = []
+    for token in timezone_tokens:
+        normalized = _normalize_timezone_token(token)
+        if normalized is None:
+            continue
+        if normalized not in normalized_timezones:
+            normalized_timezones.append(normalized)
+
     sources: dict[str, str] = {}
     raw_sources = options.get(CONF_SOURCES, {})
     if isinstance(raw_sources, dict):
@@ -82,6 +127,7 @@ def normalize_options(raw_options: dict[str, Any] | None) -> dict[str, Any]:
         CONF_SOURCE_MODE: source_mode,
         CONF_REFRESH_SECONDS: refresh_seconds,
         CONF_FORECAST_DAYS: forecast_days,
+        CONF_TIMEZONES: ",".join(normalized_timezones),
         CONF_SOURCES: sources,
     }
 
@@ -130,8 +176,39 @@ def _safe_int(value: Any, default: int) -> int:
         return default
 
 
+def _optional_float(value: Any, digits: int | None = None) -> float | None:
+    """Convert to float or return None."""
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if digits is None:
+        return parsed
+    return round(parsed, digits)
+
+
+def _optional_int(value: Any) -> int | None:
+    """Convert to int or return None."""
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
 def _coerce_state_value(raw_state: str, template_value: Any) -> Any:
     """Coerce HA state string to shape of template value."""
+    if template_value is None or template_value == "unavailable":
+        lowered = raw_state.lower()
+        if lowered in {"1", "true", "on", "yes"}:
+            return True
+        if lowered in {"0", "false", "off", "no"}:
+            return False
+        try:
+            if "." in raw_state:
+                return round(float(raw_state), 2)
+            return int(raw_state)
+        except (TypeError, ValueError):
+            return raw_state
     if isinstance(template_value, bool):
         return raw_state.lower() in {"1", "true", "on", "yes"}
     if isinstance(template_value, int):
@@ -358,6 +435,85 @@ def _forecast_jellyfish_risk(
     return "low"
 
 
+def _tick_index_from_weather(
+    *,
+    temperature: float,
+    humidity: float,
+    rain_prob_next_6h: float,
+    wind_speed: float,
+) -> int:
+    """Estimate tick suitability from weather."""
+    temp_score = 0.0
+    if 7 <= temperature <= 25:
+        temp_score = 26.0
+    elif 4 <= temperature < 7 or 25 < temperature <= 30:
+        temp_score = 12.0
+    elif temperature < 0 or temperature > 34:
+        temp_score = 0.0
+    else:
+        temp_score = 6.0
+
+    humidity_score = max(0.0, min(35.0, (humidity - 35.0) * 0.8))
+    rain_score = max(0.0, min(20.0, rain_prob_next_6h * 0.25))
+    wind_penalty = max(0.0, wind_speed - 18.0) * 1.1
+
+    index = temp_score + humidity_score + rain_score - wind_penalty
+    return max(0, min(100, int(round(index))))
+
+
+def _tick_risk_from_index(index: int) -> str:
+    """Map tick index to risk level."""
+    if index >= 75:
+        return "very_high"
+    if index >= 55:
+        return "high"
+    if index >= 35:
+        return "moderate"
+    if index >= 18:
+        return "low"
+    return "very_low"
+
+
+def _forecast_tick_risk(
+    *,
+    baseline_index: int,
+    temp_min: float,
+    temp_max: float,
+    rain_probability_max: int,
+    wind_max_kmh: float,
+) -> str:
+    """Estimate day-level tick risk from forecast + current baseline."""
+    avg_temp = (temp_min + temp_max) / 2
+    score = baseline_index / 24.0
+
+    if 8 <= avg_temp <= 24:
+        score += 2.0
+    elif 5 <= avg_temp < 8 or 24 < avg_temp <= 30:
+        score += 0.9
+    elif avg_temp < 0 or avg_temp > 34:
+        score -= 1.2
+
+    if rain_probability_max >= 65:
+        score += 1.0
+    elif rain_probability_max >= 35:
+        score += 0.5
+
+    if wind_max_kmh >= 30:
+        score -= 0.9
+    elif wind_max_kmh >= 22:
+        score -= 0.4
+
+    if score >= 4.7:
+        return "very_high"
+    if score >= 3.3:
+        return "high"
+    if score >= 2.0:
+        return "moderate"
+    if score >= 1.0:
+        return "low"
+    return "very_low"
+
+
 def _daily_hourly_values(hourly: dict[str, Any], key: str, day: str) -> list[float]:
     """Extract numeric values for one day from hourly arrays."""
     times = hourly.get("time")
@@ -375,6 +531,33 @@ def _daily_hourly_values(hourly: dict[str, Any], key: str, day: str) -> list[flo
         if value is None:
             continue
         result.append(_safe_float(value, 0.0))
+    return result
+
+
+def _build_multi_timezone_clock(raw_timezones: str) -> list[dict[str, str]]:
+    """Build current time values for custom UTC offsets."""
+    if not isinstance(raw_timezones, str) or not raw_timezones.strip():
+        return []
+
+    now_utc = datetime.now(tz=UTC)
+    result: list[dict[str, str]] = []
+    for token in [item.strip() for item in raw_timezones.split(",")]:
+        normalized = _normalize_timezone_token(token)
+        offset = _timezone_token_to_offset(token)
+        if normalized is None or offset is None:
+            continue
+        sign = 1 if offset.startswith("+") else -1
+        hours = int(offset[1:3])
+        shifted = now_utc + timedelta(hours=sign * hours)
+        result.append(
+            {
+                "timezone": normalized,
+                "offset": offset,
+                "iso": shifted.isoformat(),
+                "date": shifted.strftime("%Y-%m-%d"),
+                "time": shifted.strftime("%H:%M"),
+            }
+        )
     return result
 
 
@@ -431,7 +614,7 @@ class AuraSnapshotProvider:
                 "latitude": latitude,
                 "longitude": longitude,
                 "hourly": (
-                    "temperature_2m,precipitation_probability,precipitation,"
+                    "temperature_2m,apparent_temperature,precipitation_probability,precipitation,"
                     "weather_code,uv_index,wind_speed_10m,surface_pressure,"
                     "relative_humidity_2m"
                 ),
@@ -478,18 +661,21 @@ class AuraSnapshotProvider:
         mosquito_task = self._async_fetch_tiger_mosquito_data(
             latitude=latitude, longitude=longitude
         )
+        tick_task = self._async_fetch_tick_data(latitude=latitude, longitude=longitude)
         (
             (weather_data, weather_err),
             (marine_data, marine_err),
             (air_data, air_err),
             (jellyfish_data, jellyfish_err),
             (mosquito_data, mosquito_err),
+            (tick_data, tick_err),
         ) = await asyncio.gather(
             weather_task,
             marine_task,
             air_task,
             jellyfish_task,
             mosquito_task,
+            tick_task,
         )
 
         metrics = self._build_internal_metrics(
@@ -507,8 +693,13 @@ class AuraSnapshotProvider:
             metrics=metrics,
             mosquito_data=mosquito_data,
         )
+        tick_metrics, tick_index_for_forecast = self._build_tick_metrics(
+            metrics=metrics,
+            tick_data=tick_data,
+        )
         metrics.extend(jellyfish_metrics)
         metrics.extend(mosquito_metrics)
+        metrics.extend(tick_metrics)
 
         forecast_daily = self._build_forecast_daily(
             forecast_days=forecast_days,
@@ -517,8 +708,30 @@ class AuraSnapshotProvider:
             air_data=air_data,
             mosquito_baseline_index=mosquito_index_for_forecast,
             jellyfish_baseline_risk=jellyfish_risk_for_forecast,
+            tick_baseline_index=tick_index_for_forecast,
         )
         overrides = self._apply_ha_sources(metrics)
+
+        timezone_clock = _build_multi_timezone_clock(
+            str(self._options.get(CONF_TIMEZONES, DEFAULT_TIMEZONES))
+        )
+        external_icons: dict[str, Any] = {}
+        if isinstance(jellyfish_data, dict):
+            external_icons["jellyfish"] = {
+                "status_icon_code": jellyfish_data.get("status_icon"),
+                "nearest_beach": jellyfish_data.get("beach_name"),
+            }
+        if isinstance(mosquito_data, dict):
+            external_icons["tiger_mosquito"] = {
+                "icon": "mdi:mosquito",
+                "latest_report": mosquito_data.get("latest_received_at"),
+            }
+        if isinstance(tick_data, dict):
+            external_icons["ticks"] = {
+                "taxon": tick_data.get("taxon_name"),
+                "icon_url": tick_data.get("icon_url"),
+                "source": "iNaturalist",
+            }
 
         return {
             "meta": {
@@ -527,6 +740,7 @@ class AuraSnapshotProvider:
                 "refresh_seconds": self._options[CONF_REFRESH_SECONDS],
                 "forecast_days": forecast_days,
                 "generated_at": datetime.now(tz=UTC).isoformat(),
+                "timezones": timezone_clock,
                 "home_position": {
                     "latitude": round(latitude, 6),
                     "longitude": round(longitude, 6),
@@ -539,7 +753,9 @@ class AuraSnapshotProvider:
                     "air_quality": "ok" if air_err is None else air_err,
                     "jellyfish": "ok" if jellyfish_err is None else jellyfish_err,
                     "tiger_mosquito": "ok" if mosquito_err is None else mosquito_err,
+                    "ticks": "ok" if tick_err is None else tick_err,
                 },
+                "icons": external_icons,
                 "ha_overrides": overrides,
                 "forecast_count": len(forecast_daily),
             },
@@ -760,6 +976,245 @@ class AuraSnapshotProvider:
             error_text,
         )
 
+    async def _async_fetch_tick_data(
+        self, *, latitude: float, longitude: float
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        """Fetch tick observations around home point from iNaturalist API."""
+        now = datetime.now(tz=UTC)
+        d1_180 = (now - timedelta(days=180)).strftime("%Y-%m-%d")
+        d1_30 = (now - timedelta(days=30)).strftime("%Y-%m-%d")
+        common = {
+            "lat": f"{latitude:.6f}",
+            "lng": f"{longitude:.6f}",
+            "radius": 50,
+            "taxon_id": _INAT_TICKS_TAXON_ID,
+            "order_by": "observed_on",
+            "order": "desc",
+        }
+        url_180 = _build_url(
+            _INAT_OBSERVATIONS,
+            {
+                **common,
+                "d1": d1_180,
+                "per_page": 200,
+            },
+        )
+        url_30 = _build_url(
+            _INAT_OBSERVATIONS,
+            {
+                **common,
+                "d1": d1_30,
+                "per_page": 1,
+            },
+        )
+        (data_180, err_180), (data_30, err_30) = await asyncio.gather(
+            self._async_fetch_json(url_180),
+            self._async_fetch_json(url_30),
+        )
+        if not isinstance(data_180, dict) and not isinstance(data_30, dict):
+            return None, err_180 or err_30 or "ticks_api_unavailable"
+
+        results_180 = data_180.get("results", []) if isinstance(data_180, dict) else []
+        if not isinstance(results_180, list):
+            results_180 = []
+
+        count_180 = _safe_int(
+            data_180.get("total_results") if isinstance(data_180, dict) else len(results_180),
+            len(results_180),
+        )
+        count_30 = _safe_int(
+            data_30.get("total_results") if isinstance(data_30, dict) else 0,
+            0,
+        )
+
+        latest_observed = None
+        research_count = 0
+        needs_id_count = 0
+        icon_url = None
+        taxon_name = None
+        common_name = None
+
+        for row in results_180:
+            if not isinstance(row, dict):
+                continue
+            observed_on = row.get("observed_on")
+            if isinstance(observed_on, str):
+                parsed = dt_util.parse_datetime(f"{observed_on}T00:00:00+00:00")
+                if parsed is not None and (latest_observed is None or parsed > latest_observed):
+                    latest_observed = parsed
+
+            quality_grade = str(row.get("quality_grade") or "").lower()
+            if quality_grade == "research":
+                research_count += 1
+            elif quality_grade == "needs_id":
+                needs_id_count += 1
+
+            taxon = row.get("taxon")
+            if isinstance(taxon, dict):
+                if taxon_name is None:
+                    taxon_name = taxon.get("name")
+                if common_name is None:
+                    common_name = taxon.get("preferred_common_name")
+                if icon_url is None:
+                    photo = taxon.get("default_photo")
+                    if isinstance(photo, dict):
+                        icon_url = photo.get("square_url") or photo.get("small_url")
+
+        latest_iso = latest_observed.isoformat() if latest_observed is not None else None
+        latest_days_ago = 999
+        if latest_observed is not None:
+            latest_days_ago = max(0, int((now - latest_observed).total_seconds() / 86_400))
+
+        total_quality = research_count + needs_id_count
+        research_pct = int(round((research_count / total_quality) * 100)) if total_quality > 0 else 0
+
+        partial_errors = [err for err in (err_180, err_30) if err is not None]
+        error_text = "; ".join(partial_errors) if partial_errors else None
+
+        return (
+            {
+                "count_30d": count_30,
+                "count_180d": count_180,
+                "latest_observed_at": latest_iso,
+                "latest_days_ago": latest_days_ago,
+                "research_pct": research_pct,
+                "taxon_name": taxon_name,
+                "common_name": common_name,
+                "icon_url": icon_url,
+            },
+            error_text,
+        )
+
+    def _build_tick_metrics(
+        self,
+        *,
+        metrics: list[dict[str, Any]],
+        tick_data: dict[str, Any] | None,
+    ) -> tuple[list[dict[str, Any]], int | None]:
+        """Build tick metrics from iNaturalist observations + weather suitability."""
+        values = {item.get("entity_id"): item.get("value") for item in metrics}
+        temperature = _optional_float(values.get("sensor.apparent_temperature"))
+        if temperature is None:
+            temperature = _optional_float(values.get("sensor.sea_temperature_openmeteo"))
+        humidity = _optional_float(values.get("sensor.humidity"))
+        rain_next_6h = _optional_float(values.get("sensor.rain_next_6h"))
+        wind_speed = _optional_float(values.get("sensor.wind_speed"))
+
+        weather_index: int | None = None
+        if (
+            temperature is not None
+            and humidity is not None
+            and rain_next_6h is not None
+            and wind_speed is not None
+        ):
+            weather_index = _tick_index_from_weather(
+                temperature=temperature,
+                humidity=humidity,
+                rain_prob_next_6h=rain_next_6h,
+                wind_speed=wind_speed,
+            )
+
+        count_30d = 0
+        count_180d = 0
+        latest_report = "unknown"
+        latest_days_ago = 999
+        research_pct = 0
+        source = "internal_model"
+        taxon_label = "Ixodida"
+        icon_url = None
+
+        if isinstance(tick_data, dict):
+            source = "inaturalist_api"
+            count_30d = _safe_int(tick_data.get("count_30d"), 0)
+            count_180d = _safe_int(tick_data.get("count_180d"), 0)
+            latest_report = str(tick_data.get("latest_observed_at") or "unknown")
+            latest_days_ago = _safe_int(tick_data.get("latest_days_ago"), 999)
+            research_pct = _safe_int(tick_data.get("research_pct"), 0)
+            icon_url = tick_data.get("icon_url")
+            taxon_name = tick_data.get("taxon_name")
+            common_name = tick_data.get("common_name")
+            if isinstance(common_name, str) and common_name.strip():
+                taxon_label = common_name
+            elif isinstance(taxon_name, str) and taxon_name.strip():
+                taxon_label = taxon_name
+
+        obs_boost = min(count_30d * 5, 45) + min(count_180d, 25)
+        quality_boost = int(round((research_pct - 45) / 6))
+        if weather_index is None and source != "inaturalist_api":
+            tick_index: int | None = None
+        else:
+            base = weather_index if weather_index is not None else 20
+            tick_index = base + obs_boost + quality_boost
+
+        if tick_index is not None:
+            if latest_days_ago > 120:
+                tick_index = min(tick_index, 25)
+            elif latest_days_ago > 60:
+                tick_index = min(tick_index, 40)
+            elif latest_days_ago > 30:
+                tick_index = min(tick_index, 55)
+            tick_index = max(0, min(100, tick_index))
+        tick_risk = _tick_risk_from_index(tick_index) if tick_index is not None else "unavailable"
+
+        if source == "internal_model" and tick_index is None:
+            source = "unavailable"
+
+        return (
+            [
+                {
+                    "entity_id": "sensor.tick_risk",
+                    "name": "Tick risk",
+                    "value": tick_risk,
+                    "source": source,
+                    "icon": "mdi:bug-outline",
+                },
+                {
+                    "entity_id": "sensor.tick_index",
+                    "name": "Tick index",
+                    "value": tick_index if tick_index is not None else "unavailable",
+                    "unit": "/100",
+                    "source": source,
+                    "icon": "mdi:chart-line",
+                },
+                {
+                    "entity_id": "sensor.tick_reports_30d",
+                    "name": "Tick reports 30d",
+                    "value": count_30d,
+                    "source": source,
+                    "icon": "mdi:calendar-month",
+                },
+                {
+                    "entity_id": "sensor.tick_reports_180d",
+                    "name": "Tick reports 180d",
+                    "value": count_180d,
+                    "source": source,
+                    "icon": "mdi:calendar-range",
+                },
+                {
+                    "entity_id": "sensor.tick_last_report",
+                    "name": "Tick last report",
+                    "value": latest_report,
+                    "source": source,
+                    "icon": "mdi:clock-outline",
+                },
+                {
+                    "entity_id": "sensor.tick_source",
+                    "name": "Tick source",
+                    "value": taxon_label,
+                    "source": source,
+                    "icon": "mdi:database-search-outline",
+                },
+                {
+                    "entity_id": "sensor.tick_icon_url",
+                    "name": "Tick icon URL",
+                    "value": icon_url if isinstance(icon_url, str) and icon_url else "unavailable",
+                    "source": source,
+                    "icon": "mdi:image-outline",
+                },
+            ],
+            tick_index,
+        )
+
     def _build_jellyfish_metrics(
         self,
         *,
@@ -768,21 +1223,26 @@ class AuraSnapshotProvider:
     ) -> tuple[list[dict[str, Any]], str]:
         """Build jellyfish-related metrics with official + model fallback."""
         values = {item.get("entity_id"): item.get("value") for item in metrics}
-        sea_temp = _safe_float(values.get("sensor.sea_temperature_openmeteo"), 0.0)
-        wave_height = _safe_float(values.get("sensor.wave_height"), 0.0)
-        wind_speed = _safe_float(values.get("sensor.wind_speed"), 0.0)
-        fallback_risk = _jellyfish_risk_from_weather(sea_temp, wave_height, wind_speed)
+        sea_temp = _optional_float(values.get("sensor.sea_temperature_openmeteo"))
+        wave_height = _optional_float(values.get("sensor.wave_height"))
+        wind_speed = _optional_float(values.get("sensor.wind_speed"))
+        fallback_risk = (
+            _jellyfish_risk_from_weather(sea_temp, wave_height, wind_speed)
+            if sea_temp is not None and wave_height is not None and wind_speed is not None
+            else "unavailable"
+        )
 
         official_status = None
         official_tag = None
         official_species_count = 0
         official_last_update = "unknown"
         nearest_beach = "unknown"
-        nearest_dist_km = 0.0
+        nearest_dist_km: float | None = None
         water_quality = "unknown"
-        water_temp_official = 0.0
+        water_temp_official: float | None = None
         off_season = False
         source = "internal_model"
+        icon_code = None
 
         if isinstance(jellyfish_data, dict):
             source = "platgescat_api"
@@ -797,15 +1257,16 @@ class AuraSnapshotProvider:
                 official_species_count = len(species)
             official_last_update = str(jellyfish_data.get("last_update") or "unknown")
             nearest_beach = str(jellyfish_data.get("beach_name") or "unknown")
-            nearest_dist_km = _safe_float(jellyfish_data.get("distance_km"), 0.0)
+            nearest_dist_km = _optional_float(jellyfish_data.get("distance_km"), 2)
+            icon_code = jellyfish_data.get("status_icon")
             water_quality = str(
                 jellyfish_data.get("water_quality")
                 or jellyfish_data.get("front_water_quality_tag")
                 or "unknown"
             )
-            water_temp_official = _safe_float(
+            water_temp_official = _optional_float(
                 jellyfish_data.get("water_temp_c", jellyfish_data.get("front_water_temp")),
-                0.0,
+                1,
             )
             off_season = bool(jellyfish_data.get("off_season"))
 
@@ -814,7 +1275,7 @@ class AuraSnapshotProvider:
             status_tag=official_tag if isinstance(official_tag, str) else None,
             off_season=off_season,
         )
-        combined_risk = official_risk if official_risk != "unknown" else fallback_risk
+        combined_risk = official_risk if official_risk not in {"unknown", ""} else fallback_risk
 
         return (
             [
@@ -823,56 +1284,76 @@ class AuraSnapshotProvider:
                     "name": "Jellyfish risk",
                     "value": combined_risk,
                     "source": source,
+                    "icon": "mdi:jellyfish",
                 },
                 {
                     "entity_id": "sensor.jellyfish_official_risk",
                     "name": "Jellyfish official risk",
                     "value": official_risk,
                     "source": source,
+                    "icon": "mdi:shield-wave",
                 },
                 {
                     "entity_id": "sensor.jellyfish_official_status",
                     "name": "Jellyfish official status",
                     "value": official_status or "unknown",
                     "source": source,
+                    "icon": "mdi:information-outline",
                 },
                 {
                     "entity_id": "sensor.jellyfish_species_count",
                     "name": "Jellyfish species count",
                     "value": official_species_count,
                     "source": source,
+                    "icon": "mdi:fishbowl-outline",
                 },
                 {
                     "entity_id": "sensor.jellyfish_last_update",
                     "name": "Jellyfish last update",
                     "value": official_last_update,
                     "source": source,
+                    "icon": "mdi:clock-outline",
                 },
                 {
                     "entity_id": "sensor.jellyfish_nearest_beach",
                     "name": "Nearest beach (PlatgesCat)",
                     "value": nearest_beach,
                     "source": source,
+                    "icon": "mdi:beach",
                 },
                 {
                     "entity_id": "sensor.jellyfish_nearest_beach_distance",
                     "name": "Nearest beach distance",
-                    "value": round(nearest_dist_km, 2),
+                    "value": nearest_dist_km if nearest_dist_km is not None else "unavailable",
                     "unit": "km",
                     "source": source,
+                    "icon": "mdi:map-marker-distance",
                 },
                 {
                     "entity_id": "sensor.beach_water_quality_official",
                     "name": "Beach water quality (official)",
                     "value": water_quality,
                     "source": source,
+                    "icon": "mdi:water-check",
                 },
                 {
                     "entity_id": "sensor.beach_water_temperature_official",
                     "name": "Beach water temperature (official)",
-                    "value": round(water_temp_official, 1),
+                    "value": (
+                        water_temp_official
+                        if water_temp_official is not None
+                        else "unavailable"
+                    ),
                     "unit": "degC",
                     "source": source,
+                    "icon": "mdi:coolant-temperature",
+                },
+                {
+                    "entity_id": "sensor.jellyfish_icon_code",
+                    "name": "Jellyfish icon code",
+                    "value": icon_code if isinstance(icon_code, str) and icon_code else "unknown",
+                    "source": source,
+                    "icon": "mdi:image-outline",
                 },
             ],
             combined_risk,
@@ -883,14 +1364,16 @@ class AuraSnapshotProvider:
         *,
         metrics: list[dict[str, Any]],
         mosquito_data: dict[str, Any] | None,
-    ) -> tuple[list[dict[str, Any]], int]:
+    ) -> tuple[list[dict[str, Any]], int | None]:
         """Build tiger-mosquito metrics with observations + weather."""
         values = {item.get("entity_id"): item.get("value") for item in metrics}
-        humidity = _safe_float(values.get("sensor.humidity"), 50.0)
-        rain_next_6h = _safe_float(values.get("sensor.rain_next_6h"), 20.0)
-        wind_speed = _safe_float(values.get("sensor.wind_speed"), 8.0)
+        humidity = _optional_float(values.get("sensor.humidity"))
+        rain_next_6h = _optional_float(values.get("sensor.rain_next_6h"))
+        wind_speed = _optional_float(values.get("sensor.wind_speed"))
 
-        weather_index = _mosquito_index_from_weather(humidity, rain_next_6h, wind_speed)
+        weather_index: int | None = None
+        if humidity is not None and rain_next_6h is not None and wind_speed is not None:
+            weather_index = _mosquito_index_from_weather(humidity, rain_next_6h, wind_speed)
         count_30d = 0
         count_180d = 0
         high_conf_pct = 0
@@ -910,15 +1393,26 @@ class AuraSnapshotProvider:
 
         observation_boost = min(count_30d * 4, 42) + min(count_180d, 30)
         confidence_adjustment = int(round((high_conf_pct - 50) / 5))
-        mosquito_index = weather_index + observation_boost + confidence_adjustment
-        if latest_days_ago > 120:
-            mosquito_index = min(mosquito_index, 30)
-        elif latest_days_ago > 60:
-            mosquito_index = min(mosquito_index, 45)
-        elif latest_days_ago > 30:
-            mosquito_index = min(mosquito_index, 60)
-        mosquito_index = max(0, min(100, mosquito_index))
-        mosquito_risk = _mosquito_risk_from_index(mosquito_index)
+        if weather_index is None and source != "mosquito_alert_api":
+            mosquito_index: int | None = None
+        else:
+            base = weather_index if weather_index is not None else 20
+            mosquito_index = base + observation_boost + confidence_adjustment
+            if latest_days_ago > 120:
+                mosquito_index = min(mosquito_index, 30)
+            elif latest_days_ago > 60:
+                mosquito_index = min(mosquito_index, 45)
+            elif latest_days_ago > 30:
+                mosquito_index = min(mosquito_index, 60)
+            mosquito_index = max(0, min(100, mosquito_index))
+        mosquito_risk = (
+            _mosquito_risk_from_index(mosquito_index)
+            if mosquito_index is not None
+            else "unavailable"
+        )
+
+        if source == "internal_model" and mosquito_index is None:
+            source = "unavailable"
 
         return (
             [
@@ -927,32 +1421,37 @@ class AuraSnapshotProvider:
                     "name": "Tiger mosquito risk",
                     "value": mosquito_risk,
                     "source": source,
+                    "icon": "mdi:mosquito",
                 },
                 {
                     "entity_id": "sensor.tiger_mosquito_index",
                     "name": "Tiger mosquito index",
-                    "value": mosquito_index,
+                    "value": mosquito_index if mosquito_index is not None else "unavailable",
                     "unit": "/100",
                     "source": source,
+                    "icon": "mdi:chart-bell-curve-cumulative",
                 },
                 {
                     "entity_id": "sensor.mosquito_index",
                     "name": "Mosquito index",
-                    "value": mosquito_index,
+                    "value": mosquito_index if mosquito_index is not None else "unavailable",
                     "unit": "/100",
                     "source": source,
+                    "icon": "mdi:chart-bell-curve-cumulative",
                 },
                 {
                     "entity_id": "sensor.tiger_mosquito_reports_30d",
                     "name": "Tiger mosquito reports 30d",
                     "value": count_30d,
                     "source": source,
+                    "icon": "mdi:calendar-month",
                 },
                 {
                     "entity_id": "sensor.tiger_mosquito_reports_180d",
                     "name": "Tiger mosquito reports 180d",
                     "value": count_180d,
                     "source": source,
+                    "icon": "mdi:calendar-range",
                 },
                 {
                     "entity_id": "sensor.tiger_mosquito_high_confidence",
@@ -960,6 +1459,7 @@ class AuraSnapshotProvider:
                     "value": high_conf_pct,
                     "unit": "%",
                     "source": source,
+                    "icon": "mdi:certificate-outline",
                 },
                 {
                     "entity_id": "sensor.tiger_mosquito_confidence_avg",
@@ -967,12 +1467,14 @@ class AuraSnapshotProvider:
                     "value": confidence_avg_pct,
                     "unit": "%",
                     "source": source,
+                    "icon": "mdi:percent-outline",
                 },
                 {
                     "entity_id": "sensor.tiger_mosquito_last_report",
                     "name": "Tiger mosquito last report",
                     "value": latest_report,
                     "source": source,
+                    "icon": "mdi:clock-outline",
                 },
             ],
             mosquito_index,
@@ -1007,27 +1509,7 @@ class AuraSnapshotProvider:
         marine_data: dict[str, Any] | None,
         air_data: dict[str, Any] | None,
     ) -> list[dict[str, Any]]:
-        """Build metrics from remote APIs, fallbacking to deterministic defaults."""
-        lat = abs(latitude)
-        lon = abs(longitude)
-
-        fallback_temp = round(15 + (lat % 8) * 0.9 + (lon % 3) * 0.5, 1)
-        fallback_rain = int((lat * 3 + lon) % 45)
-        fallback_uv = round(((lat + lon) % 10) * 0.7, 1)
-        fallback_wind = int(6 + ((lat + lon) % 25))
-        fallback_pressure = int(1008 + (lat % 5) + (lon % 4))
-        fallback_humidity = int(45 + ((lat + lon) % 35))
-        fallback_sea = round(12.5 + (lat % 8) * 0.45 + (lon % 4) * 0.2, 1)
-        fallback_aqi = int(20 + ((lat * 2 + lon) % 40))
-        fallback_pm25 = round(5 + ((lat + lon) % 20), 1)
-        fallback_pm10 = round(fallback_pm25 + 8.0, 1)
-        fallback_ozone = round(35 + ((lat * 1.2 + lon * 0.8) % 60), 1)
-        fallback_no2 = round(8 + ((lat + lon) % 16), 1)
-        fallback_so2 = round(1 + ((lat + lon * 0.5) % 4), 1)
-        fallback_co = int(140 + ((lat * 3 + lon * 2) % 180))
-        fallback_dust = round(2 + ((lat + lon) % 10), 1)
-        fallback_weather_code = 3
-
+        """Build metrics from remote APIs without synthetic fallback values."""
         weather_hourly = weather_data.get("hourly", {}) if isinstance(weather_data, dict) else {}
         marine_hourly = marine_data.get("hourly", {}) if isinstance(marine_data, dict) else {}
         air_hourly = air_data.get("hourly", {}) if isinstance(air_data, dict) else {}
@@ -1036,483 +1518,294 @@ class AuraSnapshotProvider:
         marine_idx = self._select_hour_index(marine_hourly)
         air_idx = self._select_hour_index(air_hourly)
 
-        temperature = round(
-            _safe_float(_hourly_value(weather_hourly, "temperature_2m", weather_idx, fallback_temp), fallback_temp), 1
+        def hourly_float(
+            hourly: dict[str, Any], key: str, idx: int, digits: int | None = None
+        ) -> float | None:
+            value = _hourly_value(hourly, key, idx, None)
+            return _optional_float(value, digits)
+
+        def hourly_int(hourly: dict[str, Any], key: str, idx: int) -> int | None:
+            value = _hourly_value(hourly, key, idx, None)
+            return _optional_int(value)
+
+        def metric(
+            entity_id: str,
+            name: str,
+            value: Any,
+            unit: str | None = None,
+            icon: str | None = None,
+        ) -> dict[str, Any]:
+            item: dict[str, Any] = {
+                "entity_id": entity_id,
+                "name": name,
+                "value": "unavailable" if value is None else value,
+                "source": "internal_api",
+            }
+            if unit is not None:
+                item["unit"] = unit
+            if icon is not None:
+                item["icon"] = icon
+            return item
+
+        temperature = hourly_float(weather_hourly, "temperature_2m", weather_idx, 1)
+        apparent_temperature = hourly_float(
+            weather_hourly, "apparent_temperature", weather_idx, 1
         )
-        precipitation_probability = _safe_int(
-            _hourly_value(
-                weather_hourly, "precipitation_probability", weather_idx, fallback_rain
-            ),
-            fallback_rain,
+        precipitation_probability = hourly_int(
+            weather_hourly, "precipitation_probability", weather_idx
         )
-        weather_rain = weather_hourly.get("precipitation_probability", [])
+        precipitation = hourly_float(weather_hourly, "precipitation", weather_idx, 1)
+        weather_code = hourly_int(weather_hourly, "weather_code", weather_idx)
+        uv_index = hourly_float(weather_hourly, "uv_index", weather_idx, 1)
+        wind_speed = hourly_float(weather_hourly, "wind_speed_10m", weather_idx, 1)
+        pressure = hourly_int(weather_hourly, "surface_pressure", weather_idx)
+        humidity = hourly_int(weather_hourly, "relative_humidity_2m", weather_idx)
+
+        rain_next_6h: int | None = None
+        weather_rain = weather_hourly.get("precipitation_probability")
         if isinstance(weather_rain, list) and weather_rain:
             rain_window = weather_rain[weather_idx : weather_idx + 6]
-            rain_window_values = [
-                _safe_float(value, 0.0) for value in rain_window if value is not None
-            ]
-            rain_next_6h = (
-                int(round(max(rain_window_values)))
-                if rain_window_values
-                else precipitation_probability
-            )
-        else:
-            rain_next_6h = precipitation_probability
-        precipitation = round(
-            _safe_float(
-                _hourly_value(weather_hourly, "precipitation", weather_idx, fallback_rain / 30),
-                fallback_rain / 30,
-            ),
-            1,
+            numeric = [_optional_float(val) for val in rain_window]
+            numeric = [val for val in numeric if val is not None]
+            if numeric:
+                rain_next_6h = int(round(max(numeric)))
+
+        sea_temperature = hourly_float(
+            marine_hourly, "sea_surface_temperature", marine_idx, 1
         )
-        weather_code = _safe_int(
-            _hourly_value(weather_hourly, "weather_code", weather_idx, fallback_weather_code),
-            fallback_weather_code,
+        sea_temperature_3h = hourly_float(
+            marine_hourly, "sea_surface_temperature", marine_idx + 3, 1
         )
-        uv_index = round(
-            _safe_float(_hourly_value(weather_hourly, "uv_index", weather_idx, fallback_uv), fallback_uv), 1
+        sea_temperature_6h = hourly_float(
+            marine_hourly, "sea_surface_temperature", marine_idx + 6, 1
         )
-        wind_speed = round(
-            _safe_float(
-                _hourly_value(weather_hourly, "wind_speed_10m", weather_idx, fallback_wind), fallback_wind
-            ),
-            1,
+        wave_height = hourly_float(marine_hourly, "wave_height", marine_idx, 2)
+        wave_period = hourly_float(marine_hourly, "wave_period", marine_idx, 1)
+
+        aqi = hourly_int(air_hourly, "european_aqi", air_idx)
+        pm25 = hourly_float(air_hourly, "pm2_5", air_idx, 1)
+        pm10 = hourly_float(air_hourly, "pm10", air_idx, 1)
+        ozone = hourly_float(air_hourly, "ozone", air_idx, 1)
+        no2 = hourly_float(air_hourly, "nitrogen_dioxide", air_idx, 1)
+        so2 = hourly_float(air_hourly, "sulphur_dioxide", air_idx, 1)
+        co = hourly_int(air_hourly, "carbon_monoxide", air_idx)
+        dust_now = hourly_float(air_hourly, "dust", air_idx, 1)
+        dust_6h = hourly_float(air_hourly, "dust", air_idx + 6, 1)
+
+        pollen_grass = hourly_int(air_hourly, "grass_pollen", air_idx)
+        pollen_birch = hourly_int(air_hourly, "birch_pollen", air_idx)
+        pollen_alder = hourly_int(air_hourly, "alder_pollen", air_idx)
+        pollen_olive = hourly_int(air_hourly, "olive_pollen", air_idx)
+        pollen_ragweed = hourly_int(air_hourly, "ragweed_pollen", air_idx)
+        pollen_mugwort = hourly_int(air_hourly, "mugwort_pollen", air_idx)
+        pollen_values = [
+            pollen_grass,
+            pollen_birch,
+            pollen_alder,
+            pollen_olive,
+            pollen_ragweed,
+            pollen_mugwort,
+        ]
+        pollen_total = sum(pollen_values) if all(v is not None for v in pollen_values) else None
+
+        ambrosia_risk: str | None = None
+        if pollen_ragweed is not None:
+            ambrosia_risk = "low"
+            if pollen_ragweed > 50:
+                ambrosia_risk = "very_high"
+            elif pollen_ragweed > 20:
+                ambrosia_risk = "high"
+            elif pollen_ragweed > 5:
+                ambrosia_risk = "moderate"
+
+        dust_level = _dust_level(dust_now) if dust_now is not None else None
+        allergy_index = (
+            _allergy_index(float(pollen_total), float(dust_now), float(aqi))
+            if pollen_total is not None and dust_now is not None and aqi is not None
+            else None
         )
-        pressure = _safe_int(
-            _hourly_value(weather_hourly, "surface_pressure", weather_idx, fallback_pressure),
-            fallback_pressure,
-        )
-        humidity = _safe_int(
-            _hourly_value(weather_hourly, "relative_humidity_2m", weather_idx, fallback_humidity),
-            fallback_humidity,
+        asthma_risk = (
+            _asthma_risk(float(aqi), float(pm25), float(dust_now), float(pollen_total))
+            if aqi is not None
+            and pm25 is not None
+            and dust_now is not None
+            and pollen_total is not None
+            else None
         )
 
-        sea_temperature = round(
-            _safe_float(
-                _hourly_value(marine_hourly, "sea_surface_temperature", marine_idx, fallback_sea),
-                fallback_sea,
-            ),
-            1,
-        )
-        sea_temperature_3h = round(
-            _safe_float(
-                _hourly_value(marine_hourly, "sea_surface_temperature", marine_idx + 3, sea_temperature - 0.1),
-                sea_temperature - 0.1,
-            ),
-            1,
-        )
-        sea_temperature_6h = round(
-            _safe_float(
-                _hourly_value(marine_hourly, "sea_surface_temperature", marine_idx + 6, sea_temperature - 0.2),
-                sea_temperature - 0.2,
-            ),
-            1,
-        )
-        wave_height = round(
-            _safe_float(_hourly_value(marine_hourly, "wave_height", marine_idx, 0.5), 0.5), 2
-        )
-        wave_period = round(
-            _safe_float(_hourly_value(marine_hourly, "wave_period", marine_idx, 4.0), 4.0), 1
-        )
+        beach_flag: str | None = None
+        if wave_height is not None and wind_speed is not None:
+            beach_flag = "green"
+            if wave_height > 2.0 or wind_speed > 40:
+                beach_flag = "red"
+            elif wave_height > 1.2 or wind_speed > 25:
+                beach_flag = "yellow"
 
-        aqi = _safe_int(_hourly_value(air_hourly, "european_aqi", air_idx, fallback_aqi), fallback_aqi)
-        pm25 = round(_safe_float(_hourly_value(air_hourly, "pm2_5", air_idx, fallback_pm25), fallback_pm25), 1)
-        pm10 = round(_safe_float(_hourly_value(air_hourly, "pm10", air_idx, fallback_pm10), fallback_pm10), 1)
-        ozone = round(_safe_float(_hourly_value(air_hourly, "ozone", air_idx, fallback_ozone), fallback_ozone), 1)
-        no2 = round(
-            _safe_float(_hourly_value(air_hourly, "nitrogen_dioxide", air_idx, fallback_no2), fallback_no2), 1
-        )
-        so2 = round(
-            _safe_float(_hourly_value(air_hourly, "sulphur_dioxide", air_idx, fallback_so2), fallback_so2), 1
-        )
-        co = _safe_int(
-            _hourly_value(air_hourly, "carbon_monoxide", air_idx, fallback_co), fallback_co
-        )
+        beach_danger_index: str | None = None
+        if beach_flag is not None and uv_index is not None:
+            beach_danger_index = "Low"
+            if beach_flag == "red" or uv_index > 10:
+                beach_danger_index = "High"
+            elif beach_flag == "yellow" or uv_index > 8:
+                beach_danger_index = "Medium"
 
-        pollen_grass = _safe_int(
-            _hourly_value(air_hourly, "grass_pollen", air_idx, int((lat + lon) % 10)),
-            int((lat + lon) % 10),
-        )
-        pollen_birch = _safe_int(
-            _hourly_value(air_hourly, "birch_pollen", air_idx, int((lat * 2) % 20)),
-            int((lat * 2) % 20),
-        )
-        pollen_alder = _safe_int(
-            _hourly_value(air_hourly, "alder_pollen", air_idx, int((lon * 1.3) % 12)),
-            int((lon * 1.3) % 12),
-        )
-        pollen_olive = _safe_int(
-            _hourly_value(air_hourly, "olive_pollen", air_idx, int((lat * lon) % 8)),
-            int((lat * lon) % 8),
-        )
-        pollen_ragweed = _safe_int(
-            _hourly_value(air_hourly, "ragweed_pollen", air_idx, int((lat + lon * 1.7) % 6)),
-            int((lat + lon * 1.7) % 6),
-        )
-        pollen_mugwort = _safe_int(
-            _hourly_value(air_hourly, "mugwort_pollen", air_idx, int((lat * 1.1 + lon * 0.9) % 6)),
-            int((lat * 1.1 + lon * 0.9) % 6),
-        )
-        pollen_total = (
-            pollen_grass
-            + pollen_birch
-            + pollen_alder
-            + pollen_olive
-            + pollen_ragweed
-            + pollen_mugwort
-        )
-        ambrosia_risk = "low"
-        if pollen_ragweed > 50:
-            ambrosia_risk = "very_high"
-        elif pollen_ragweed > 20:
-            ambrosia_risk = "high"
-        elif pollen_ragweed > 5:
-            ambrosia_risk = "moderate"
+        beach_crowding: str | None = None
+        if temperature is not None and precipitation_probability is not None:
+            hour = dt_util.now().hour
+            weekday = dt_util.now().weekday()
+            crowd_score = 0
+            if 11 <= hour <= 14:
+                crowd_score += 3
+            elif 10 <= hour <= 16:
+                crowd_score += 2
+            elif 9 <= hour <= 18:
+                crowd_score += 1
+            if weekday >= 5:
+                crowd_score += 2
+            if temperature > 25 and precipitation_probability < 20:
+                crowd_score += 2
+            elif temperature > 20 and precipitation_probability < 40:
+                crowd_score += 1
+            if precipitation_probability > 50:
+                crowd_score -= 3
 
-        dust_now = round(
-            _safe_float(_hourly_value(air_hourly, "dust", air_idx, fallback_dust), fallback_dust), 1
+            if crowd_score >= 6:
+                beach_crowding = "very_crowded"
+            elif crowd_score >= 4:
+                beach_crowding = "crowded"
+            elif crowd_score >= 2:
+                beach_crowding = "normal"
+            else:
+                beach_crowding = "empty"
+
+        beach_comfort: int | None = None
+        if (
+            beach_flag is not None
+            and sea_temperature is not None
+            and uv_index is not None
+            and beach_crowding is not None
+        ):
+            score = 10
+            if beach_flag == "red":
+                score -= 5
+            elif beach_flag == "yellow":
+                score -= 2
+            if sea_temperature < 18:
+                score -= 2
+            elif sea_temperature < 20:
+                score -= 1
+            elif sea_temperature >= 24:
+                score += 1
+            if uv_index > 10:
+                score -= 2
+            elif uv_index > 8:
+                score -= 1
+            if beach_crowding == "very_crowded":
+                score -= 1
+            beach_comfort = max(0, min(10, score))
+
+        beach_recommendation: str | None = None
+        if (
+            beach_comfort is not None
+            and beach_flag is not None
+            and precipitation_probability is not None
+        ):
+            beach_recommendation = "Not ideal"
+            if (
+                beach_comfort >= 7
+                and beach_flag == "green"
+                and precipitation_probability < 20
+            ):
+                beach_recommendation = "Recommended"
+
+        weather_summary = (
+            _weather_summary(float(temperature), float(precipitation_probability))
+            if temperature is not None and precipitation_probability is not None
+            else None
         )
-        dust_6h = round(
-            _safe_float(_hourly_value(air_hourly, "dust", air_idx + 6, dust_now), dust_now), 1
-        )
-        dust_level = _dust_level(dust_now)
-        allergy_index = _allergy_index(float(pollen_total), float(dust_now), float(aqi))
-        asthma_risk = _asthma_risk(float(aqi), float(pm25), float(dust_now), float(pollen_total))
-
-        beach_flag = "green"
-        if wave_height > 2.0 or wind_speed > 40:
-            beach_flag = "red"
-        elif wave_height > 1.2 or wind_speed > 25:
-            beach_flag = "yellow"
-
-        beach_danger_index = "Low"
-        if beach_flag == "red" or uv_index > 10:
-            beach_danger_index = "High"
-        elif beach_flag == "yellow" or uv_index > 8:
-            beach_danger_index = "Medium"
-
-        hour = dt_util.now().hour
-        weekday = dt_util.now().weekday()
-        crowd_score = 0
-        if 11 <= hour <= 14:
-            crowd_score += 3
-        elif 10 <= hour <= 16:
-            crowd_score += 2
-        elif 9 <= hour <= 18:
-            crowd_score += 1
-        if weekday >= 5:
-            crowd_score += 2
-        if temperature > 25 and precipitation_probability < 20:
-            crowd_score += 2
-        elif temperature > 20 and precipitation_probability < 40:
-            crowd_score += 1
-        if precipitation_probability > 50:
-            crowd_score -= 3
-
-        if crowd_score >= 6:
-            beach_crowding = "very_crowded"
-        elif crowd_score >= 4:
-            beach_crowding = "crowded"
-        elif crowd_score >= 2:
-            beach_crowding = "normal"
-        else:
-            beach_crowding = "empty"
-
-        beach_comfort = 10
-        if beach_flag == "red":
-            beach_comfort -= 5
-        elif beach_flag == "yellow":
-            beach_comfort -= 2
-        if sea_temperature < 18:
-            beach_comfort -= 2
-        elif sea_temperature < 20:
-            beach_comfort -= 1
-        elif sea_temperature >= 24:
-            beach_comfort += 1
-        if uv_index > 10:
-            beach_comfort -= 2
-        elif uv_index > 8:
-            beach_comfort -= 1
-        if beach_crowding == "very_crowded":
-            beach_comfort -= 1
-        beach_comfort = max(0, min(10, beach_comfort))
-
-        beach_recommendation = "Not ideal"
-        if beach_comfort >= 7 and beach_flag == "green" and precipitation_probability < 20:
-            beach_recommendation = "Recommended"
-
-        weather_summary = _weather_summary(temperature, precipitation_probability)
+        waqi_proxy = aqi + 12 if aqi is not None else None
 
         return [
-            {
-                "entity_id": "sensor.weather_summary",
-                "name": "Weather summary",
-                "value": weather_summary,
-                "source": "internal_api",
-            },
-            {
-                "entity_id": "sensor.weather_code",
-                "name": "Weather code",
-                "value": weather_code,
-                "source": "internal_api",
-            },
-            {
-                "entity_id": "sensor.precipitation_probability",
-                "name": "Precipitation probability",
-                "value": precipitation_probability,
-                "unit": "%",
-                "source": "internal_api",
-            },
-            {
-                "entity_id": "sensor.precipitation",
-                "name": "Precipitation",
-                "value": precipitation,
-                "unit": "mm",
-                "source": "internal_api",
-            },
-            {
-                "entity_id": "sensor.uv_index",
-                "name": "UV index",
-                "value": uv_index,
-                "source": "internal_api",
-            },
-            {
-                "entity_id": "sensor.rain_next_6h",
-                "name": "Rain probability next 6h",
-                "value": rain_next_6h,
-                "unit": "%",
-                "source": "internal_api",
-            },
-            {
-                "entity_id": "sensor.wind_speed",
-                "name": "Wind speed",
-                "value": wind_speed,
-                "unit": "km/h",
-                "source": "internal_api",
-            },
-            {
-                "entity_id": "sensor.pressure",
-                "name": "Pressure",
-                "value": pressure,
-                "unit": "hPa",
-                "source": "internal_api",
-            },
-            {
-                "entity_id": "sensor.humidity",
-                "name": "Humidity",
-                "value": humidity,
-                "unit": "%",
-                "source": "internal_api",
-            },
-            {
-                "entity_id": "sensor.sea_temperature_openmeteo",
-                "name": "Sea temperature",
-                "value": sea_temperature,
-                "unit": "degC",
-                "source": "internal_api",
-            },
-            {
-                "entity_id": "sensor.sea_temperature_openmeteo_3h",
-                "name": "Sea temperature +3h",
-                "value": sea_temperature_3h,
-                "unit": "degC",
-                "source": "internal_api",
-            },
-            {
-                "entity_id": "sensor.sea_temperature_openmeteo_6h",
-                "name": "Sea temperature +6h",
-                "value": sea_temperature_6h,
-                "unit": "degC",
-                "source": "internal_api",
-            },
-            {
-                "entity_id": "sensor.wave_height",
-                "name": "Wave height",
-                "value": wave_height,
-                "unit": "m",
-                "source": "internal_api",
-            },
-            {
-                "entity_id": "sensor.wave_period",
-                "name": "Wave period",
-                "value": wave_period,
-                "unit": "s",
-                "source": "internal_api",
-            },
-            {
-                "entity_id": "sensor.pollen_total",
-                "name": "Pollen total",
-                "value": pollen_total,
-                "unit": "grains/m3",
-                "source": "internal_api",
-            },
-            {
-                "entity_id": "sensor.pollen_birch",
-                "name": "Pollen birch",
-                "value": pollen_birch,
-                "unit": "grains/m3",
-                "source": "internal_api",
-            },
-            {
-                "entity_id": "sensor.pollen_alder",
-                "name": "Pollen alder",
-                "value": pollen_alder,
-                "unit": "grains/m3",
-                "source": "internal_api",
-            },
-            {
-                "entity_id": "sensor.pollen_grass",
-                "name": "Pollen grass",
-                "value": pollen_grass,
-                "unit": "grains/m3",
-                "source": "internal_api",
-            },
-            {
-                "entity_id": "sensor.pollen_olive",
-                "name": "Pollen olive",
-                "value": pollen_olive,
-                "unit": "grains/m3",
-                "source": "internal_api",
-            },
-            {
-                "entity_id": "sensor.pollen_ragweed",
-                "name": "Pollen ragweed",
-                "value": pollen_ragweed,
-                "unit": "grains/m3",
-                "source": "internal_api",
-            },
-            {
-                "entity_id": "sensor.pollen_ambrosia",
-                "name": "Pollen ambrosia",
-                "value": pollen_ragweed,
-                "unit": "grains/m3",
-                "source": "internal_api",
-            },
-            {
-                "entity_id": "sensor.ambrosia_risk",
-                "name": "Ambrosia risk",
-                "value": ambrosia_risk,
-                "source": "internal_api",
-            },
-            {
-                "entity_id": "sensor.allergy_index",
-                "name": "Allergy index",
-                "value": allergy_index,
-                "unit": "/100",
-                "source": "internal_api",
-            },
-            {
-                "entity_id": "sensor.asthma_risk",
-                "name": "Asthma risk",
-                "value": asthma_risk,
-                "source": "internal_api",
-            },
-            {
-                "entity_id": "sensor.pollen_mugwort",
-                "name": "Pollen mugwort",
-                "value": pollen_mugwort,
-                "unit": "grains/m3",
-                "source": "internal_api",
-            },
-            {
-                "entity_id": "sensor.air_quality_european_aqi",
-                "name": "European AQI",
-                "value": aqi,
-                "unit": "AQI",
-                "source": "internal_api",
-            },
-            {
-                "entity_id": "sensor.air_quality_pm25",
-                "name": "PM2.5",
-                "value": pm25,
-                "unit": "ug/m3",
-                "source": "internal_api",
-            },
-            {
-                "entity_id": "sensor.air_quality_pm10",
-                "name": "PM10",
-                "value": pm10,
-                "unit": "ug/m3",
-                "source": "internal_api",
-            },
-            {
-                "entity_id": "sensor.air_quality_ozone",
-                "name": "Ozone (O3)",
-                "value": ozone,
-                "unit": "ug/m3",
-                "source": "internal_api",
-            },
-            {
-                "entity_id": "sensor.air_quality_no2",
-                "name": "Nitrogen dioxide",
-                "value": no2,
-                "unit": "ug/m3",
-                "source": "internal_api",
-            },
-            {
-                "entity_id": "sensor.air_quality_so2",
-                "name": "Sulfur dioxide",
-                "value": so2,
-                "unit": "ug/m3",
-                "source": "internal_api",
-            },
-            {
-                "entity_id": "sensor.air_quality_co",
-                "name": "Carbon monoxide",
-                "value": co,
-                "unit": "ug/m3",
-                "source": "internal_api",
-            },
-            {
-                "entity_id": "sensor.waqi_barcelona",
-                "name": "WAQI proxy",
-                "value": aqi + 12,
-                "source": "internal_api",
-            },
-            {
-                "entity_id": "sensor.saharan_dust_level",
-                "name": "Saharan dust level",
-                "value": dust_level,
-                "source": "internal_api",
-            },
-            {
-                "entity_id": "sensor.saharan_dust_forecast_6h",
-                "name": "Saharan dust forecast +6h",
-                "value": dust_6h,
-                "unit": "ug/m3",
-                "source": "internal_api",
-            },
-            {
-                "entity_id": "sensor.beach_flag_calculated",
-                "name": "Beach flag (calculated)",
-                "value": beach_flag,
-                "source": "internal_api",
-            },
-            {
-                "entity_id": "sensor.beach_danger_index",
-                "name": "Beach danger index",
-                "value": beach_danger_index,
-                "source": "internal_api",
-            },
-            {
-                "entity_id": "sensor.beach_crowding_estimate",
-                "name": "Beach crowding estimate",
-                "value": beach_crowding,
-                "source": "internal_api",
-            },
-            {
-                "entity_id": "sensor.beach_comfort_index",
-                "name": "Beach comfort index",
-                "value": beach_comfort,
-                "unit": "/10",
-                "source": "internal_api",
-            },
-            {
-                "entity_id": "sensor.beach_recommendation",
-                "name": "Beach recommendation",
-                "value": beach_recommendation,
-                "source": "internal_api",
-            },
+            metric("sensor.weather_summary", "Weather summary", weather_summary),
+            metric("sensor.weather_code", "Weather code", weather_code),
+            metric(
+                "sensor.precipitation_probability",
+                "Precipitation probability",
+                precipitation_probability,
+                "%",
+            ),
+            metric("sensor.precipitation", "Precipitation", precipitation, "mm"),
+            metric("sensor.uv_index", "UV index", uv_index),
+            metric(
+                "sensor.rain_next_6h",
+                "Rain probability next 6h",
+                rain_next_6h,
+                "%",
+            ),
+            metric("sensor.wind_speed", "Wind speed", wind_speed, "km/h"),
+            metric("sensor.pressure", "Pressure", pressure, "hPa"),
+            metric("sensor.humidity", "Humidity", humidity, "%"),
+            metric(
+                "sensor.apparent_temperature",
+                "Apparent temperature",
+                apparent_temperature if apparent_temperature is not None else temperature,
+                "degC",
+            ),
+            metric(
+                "sensor.sea_temperature_openmeteo",
+                "Sea temperature",
+                sea_temperature,
+                "degC",
+            ),
+            metric(
+                "sensor.sea_temperature_openmeteo_3h",
+                "Sea temperature +3h",
+                sea_temperature_3h,
+                "degC",
+            ),
+            metric(
+                "sensor.sea_temperature_openmeteo_6h",
+                "Sea temperature +6h",
+                sea_temperature_6h,
+                "degC",
+            ),
+            metric("sensor.wave_height", "Wave height", wave_height, "m"),
+            metric("sensor.wave_period", "Wave period", wave_period, "s"),
+            metric("sensor.pollen_total", "Pollen total", pollen_total, "grains/m3"),
+            metric("sensor.pollen_birch", "Pollen birch", pollen_birch, "grains/m3"),
+            metric("sensor.pollen_alder", "Pollen alder", pollen_alder, "grains/m3"),
+            metric("sensor.pollen_grass", "Pollen grass", pollen_grass, "grains/m3"),
+            metric("sensor.pollen_olive", "Pollen olive", pollen_olive, "grains/m3"),
+            metric("sensor.pollen_ragweed", "Pollen ragweed", pollen_ragweed, "grains/m3"),
+            metric("sensor.pollen_ambrosia", "Pollen ambrosia", pollen_ragweed, "grains/m3"),
+            metric("sensor.ambrosia_risk", "Ambrosia risk", ambrosia_risk),
+            metric("sensor.allergy_index", "Allergy index", allergy_index, "/100"),
+            metric("sensor.asthma_risk", "Asthma risk", asthma_risk),
+            metric("sensor.pollen_mugwort", "Pollen mugwort", pollen_mugwort, "grains/m3"),
+            metric("sensor.air_quality_european_aqi", "European AQI", aqi, "AQI"),
+            metric("sensor.air_quality_pm25", "PM2.5", pm25, "ug/m3"),
+            metric("sensor.air_quality_pm10", "PM10", pm10, "ug/m3"),
+            metric("sensor.air_quality_ozone", "Ozone (O3)", ozone, "ug/m3"),
+            metric("sensor.air_quality_no2", "Nitrogen dioxide", no2, "ug/m3"),
+            metric("sensor.air_quality_so2", "Sulfur dioxide", so2, "ug/m3"),
+            metric("sensor.air_quality_co", "Carbon monoxide", co, "ug/m3"),
+            metric("sensor.waqi_barcelona", "WAQI proxy", waqi_proxy),
+            metric("sensor.saharan_dust_level", "Saharan dust level", dust_level),
+            metric(
+                "sensor.saharan_dust_forecast_6h",
+                "Saharan dust forecast +6h",
+                dust_6h,
+                "ug/m3",
+            ),
+            metric("sensor.beach_flag_calculated", "Beach flag (calculated)", beach_flag),
+            metric("sensor.beach_danger_index", "Beach danger index", beach_danger_index),
+            metric(
+                "sensor.beach_crowding_estimate",
+                "Beach crowding estimate",
+                beach_crowding,
+            ),
+            metric("sensor.beach_comfort_index", "Beach comfort index", beach_comfort, "/10"),
+            metric("sensor.beach_recommendation", "Beach recommendation", beach_recommendation),
         ]
 
     def _build_forecast_daily(
@@ -1522,8 +1815,9 @@ class AuraSnapshotProvider:
         weather_data: dict[str, Any] | None,
         marine_data: dict[str, Any] | None,
         air_data: dict[str, Any] | None,
-        mosquito_baseline_index: int,
+        mosquito_baseline_index: int | None,
         jellyfish_baseline_risk: str,
+        tick_baseline_index: int | None,
     ) -> list[dict[str, Any]]:
         """Build 1..7 day forecast summary."""
         weather_daily = weather_data.get("daily", {}) if isinstance(weather_data, dict) else {}
@@ -1627,18 +1921,33 @@ class AuraSnapshotProvider:
                 beach_score -= 1
             beach_score = max(0, min(10, beach_score))
 
-            mosquito_risk_est = _forecast_mosquito_risk(
-                baseline_index=mosquito_baseline_index,
-                temp_min=temp_min,
-                temp_max=temp_max,
-                rain_probability_max=rain_prob_max,
-                wind_max_kmh=wind_max,
+            mosquito_risk_est = (
+                _forecast_mosquito_risk(
+                    baseline_index=mosquito_baseline_index,
+                    temp_min=temp_min,
+                    temp_max=temp_max,
+                    rain_probability_max=rain_prob_max,
+                    wind_max_kmh=wind_max,
+                )
+                if mosquito_baseline_index is not None
+                else "unavailable"
             )
             jellyfish_risk_est = _forecast_jellyfish_risk(
                 baseline_risk=jellyfish_baseline_risk,
                 sea_temp_avg=sea_temp_avg,
                 wave_height_max=wave_height_max,
                 wind_max_kmh=wind_max,
+            )
+            tick_risk_est = (
+                _forecast_tick_risk(
+                    baseline_index=tick_baseline_index,
+                    temp_min=temp_min,
+                    temp_max=temp_max,
+                    rain_probability_max=rain_prob_max,
+                    wind_max_kmh=wind_max,
+                )
+                if tick_baseline_index is not None
+                else "unavailable"
             )
 
             result.append(
@@ -1663,6 +1972,7 @@ class AuraSnapshotProvider:
                     "beach_score": beach_score,
                     "mosquito_risk_est": mosquito_risk_est,
                     "jellyfish_risk_est": jellyfish_risk_est,
+                    "tick_risk_est": tick_risk_est,
                 }
             )
 
