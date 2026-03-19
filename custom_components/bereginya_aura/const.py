@@ -5,7 +5,7 @@ VERSION = "0.1.0"
 
 API_ENDPOINT = "/api/bereginya_aura/v1/snapshot"
 FRONTEND_STATIC_BASE = "/bereginya-aura"
-FRONTEND_MODULE_URL = f"{FRONTEND_STATIC_BASE}/bereginya-aura-card.js"
+FRONTEND_MODULE_URL = f"{FRONTEND_STATIC_BASE}/bereginya-aura-card.js?v={VERSION}"
 
 DATA_FRONTEND_REGISTERED = "frontend_registered"
 DATA_VIEW_REGISTERED = "view_registered"
