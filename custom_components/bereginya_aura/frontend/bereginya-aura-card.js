@@ -134,10 +134,21 @@ if (!customElements.get("bereginya-aura")) {
 }
 
 window.customCards = window.customCards || [];
-if (!window.customCards.find((card) => card.type === "bereginya-aura")) {
-  window.customCards.push({
+const _auraCards = [
+  {
     type: "bereginya-aura",
     name: "Beregynya AURA",
     description: "Prototype card powered by internal Beregynya AURA API.",
-  });
+  },
+  {
+    type: "custom:bereginya-aura",
+    name: "Beregynya AURA",
+    description: "Prototype card powered by internal Beregynya AURA API.",
+  },
+];
+
+for (const card of _auraCards) {
+  if (!window.customCards.find((it) => it.type === card.type)) {
+    window.customCards.push(card);
+  }
 }
