@@ -14,7 +14,7 @@ entities. It can optionally reuse selected HA entities in `hybrid` mode.
 - Pulls tick observations around home point from iNaturalist API
 - Exposes icon codes/URLs from external sources in snapshot `meta.icons` + entity fields
 - Supports extra timezone clocks via `timezones: "UTC+01,UTC+03,UTC-05"`
-- No synthetic fallback values: if upstream data is missing, metrics are `unavailable`
+- No synthetic substitute values: if upstream data is missing, metrics are `unavailable`
 - Calculates derived metrics internally (weather summary, beach indexes, recommendation)
 - Uses only HA home position (`latitude`, `longitude`, `elevation`, `timezone`) as base input
 - Optionally overrides selected metrics from HA entities via mapping

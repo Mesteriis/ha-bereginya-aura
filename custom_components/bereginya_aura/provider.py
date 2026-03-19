@@ -1221,12 +1221,12 @@ class AuraSnapshotProvider:
         metrics: list[dict[str, Any]],
         jellyfish_data: dict[str, Any] | None,
     ) -> tuple[list[dict[str, Any]], str]:
-        """Build jellyfish-related metrics with official + model fallback."""
+        """Build jellyfish-related metrics with official + model estimate."""
         values = {item.get("entity_id"): item.get("value") for item in metrics}
         sea_temp = _optional_float(values.get("sensor.sea_temperature_openmeteo"))
         wave_height = _optional_float(values.get("sensor.wave_height"))
         wind_speed = _optional_float(values.get("sensor.wind_speed"))
-        fallback_risk = (
+        estimated_risk = (
             _jellyfish_risk_from_weather(sea_temp, wave_height, wind_speed)
             if sea_temp is not None and wave_height is not None and wind_speed is not None
             else "unavailable"
@@ -1275,7 +1275,7 @@ class AuraSnapshotProvider:
             status_tag=official_tag if isinstance(official_tag, str) else None,
             off_season=off_season,
         )
-        combined_risk = official_risk if official_risk not in {"unknown", ""} else fallback_risk
+        combined_risk = official_risk if official_risk not in {"unknown", ""} else estimated_risk
 
         return (
             [
@@ -1481,7 +1481,7 @@ class AuraSnapshotProvider:
         )
 
     def _select_hour_index(self, hourly: dict[str, Any]) -> int:
-        """Pick index matching current local time or fallback to 0."""
+        """Pick index matching current local time or return 0."""
         times = hourly.get("time")
         if not isinstance(times, list) or not times:
             return 0
@@ -1509,7 +1509,7 @@ class AuraSnapshotProvider:
         marine_data: dict[str, Any] | None,
         air_data: dict[str, Any] | None,
     ) -> list[dict[str, Any]]:
-        """Build metrics from remote APIs without synthetic fallback values."""
+        """Build metrics from remote APIs without synthetic substitute values."""
         weather_hourly = weather_data.get("hourly", {}) if isinstance(weather_data, dict) else {}
         marine_hourly = marine_data.get("hourly", {}) if isinstance(marine_data, dict) else {}
         air_hourly = air_data.get("hourly", {}) if isinstance(air_data, dict) else {}
