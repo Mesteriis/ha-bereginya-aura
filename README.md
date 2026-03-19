@@ -91,6 +91,7 @@ bereginya_aura:
     sea_temperature: sensor.sea_temperature_openmeteo
     aqi: sensor.air_quality_european_aqi
     pollen_total: sensor.pollen_total
+    pollen_ambrosia: sensor.pollen_ragweed
     beach_comfort_index: sensor.beach_comfort_index
 ```
 

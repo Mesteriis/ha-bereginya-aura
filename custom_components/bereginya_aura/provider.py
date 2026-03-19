@@ -451,6 +451,13 @@ class AuraSnapshotProvider:
             + pollen_ragweed
             + pollen_mugwort
         )
+        ambrosia_risk = "low"
+        if pollen_ragweed > 50:
+            ambrosia_risk = "very_high"
+        elif pollen_ragweed > 20:
+            ambrosia_risk = "high"
+        elif pollen_ragweed > 5:
+            ambrosia_risk = "moderate"
 
         dust_now = round(
             _safe_float(_hourly_value(air_hourly, "dust", air_idx, fallback_dust), fallback_dust), 1
@@ -646,6 +653,19 @@ class AuraSnapshotProvider:
                 "name": "Pollen ragweed",
                 "value": pollen_ragweed,
                 "unit": "grains/m3",
+                "source": "internal_api",
+            },
+            {
+                "entity_id": "sensor.pollen_ambrosia",
+                "name": "Pollen ambrosia",
+                "value": pollen_ragweed,
+                "unit": "grains/m3",
+                "source": "internal_api",
+            },
+            {
+                "entity_id": "sensor.ambrosia_risk",
+                "name": "Ambrosia risk",
+                "value": ambrosia_risk,
                 "source": "internal_api",
             },
             {
