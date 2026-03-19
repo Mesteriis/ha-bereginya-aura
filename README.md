@@ -12,7 +12,8 @@ entities. It can optionally reuse selected HA entities in `hybrid` mode.
 - Pulls official jellyfish/beach state for nearest beach from PlatgesCat (ACA)
 - Pulls tiger mosquito observations around home point from Mosquito Alert API
 - Pulls tick observations around home point from iNaturalist API
-- Exposes icon codes/URLs from external sources in snapshot `meta.icons` + entity fields
+- Exposes icon catalog for all metrics in snapshot `meta.icons.entities`
+- Adds `icon_url` + `icon_gif_url` for each entity (GIF preferred support)
 - Supports extra timezone clocks via `timezones: "UTC+01,UTC+03,UTC-05"`
 - No synthetic substitute values: if upstream data is missing, metrics are `unavailable`
 - Calculates derived metrics internally (weather summary, beach indexes, recommendation)
@@ -71,9 +72,19 @@ Response:
       {"timezone":"UTC-05","time":"16:05"}
     ],
     "icons": {
-      "jellyfish": {"status_icon_code":"icono_-32(46).png"},
-      "ticks": {"icon_url":"https://static.inaturalist.org/..."},
-      "tiger_mosquito": {"icon":"mdi:mosquito"}
+      "weather_current": {
+        "weather_code": 3,
+        "emoji_code": "2601_fe0f",
+        "icon_url": "https://fonts.gstatic.com/s/e/notoemoji/latest/2601_fe0f/512.png",
+        "icon_gif_url": "https://fonts.gstatic.com/s/e/notoemoji/latest/2601_fe0f/512.gif"
+      },
+      "entities": {
+        "sensor.tiger_mosquito_risk": {
+          "icon": "mdi:mosquito",
+          "icon_url": "https://fonts.gstatic.com/s/e/notoemoji/latest/1f99f/512.png",
+          "icon_gif_url": "https://fonts.gstatic.com/s/e/notoemoji/latest/1f99f/512.gif"
+        }
+      }
     },
     "ha_overrides": {
       "attempted": 0,
@@ -88,7 +99,9 @@ Response:
       "name": "Sea temperature",
       "value": 14.3,
       "unit": "degC",
-      "source": "internal_api"
+      "source": "internal_api",
+      "icon_url": "https://fonts.gstatic.com/s/e/notoemoji/latest/1f30a/512.png",
+      "icon_gif_url": "https://fonts.gstatic.com/s/e/notoemoji/latest/1f30a/512.gif"
     }
   ],
   "forecast_daily": [
@@ -96,6 +109,7 @@ Response:
       "date": "2026-03-20",
       "temp_min": 12.3,
       "temp_max": 19.4,
+      "weather_icon_gif_url": "https://fonts.gstatic.com/s/e/notoemoji/latest/2601_fe0f/512.gif",
       "rain_probability_max": 35,
       "rain_sum_mm": 1.1,
       "uv_max": 5.7,
@@ -160,6 +174,7 @@ refresh_seconds: 120
 force_refresh: false
 lang: ru
 show_icons: true
+prefer_gif_icons: true
 ```
 
 Card supports languages: `ru` (default), `en`, `ua`, `es`.

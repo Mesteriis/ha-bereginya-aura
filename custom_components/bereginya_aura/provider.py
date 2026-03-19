@@ -48,6 +48,75 @@ _TIGER_MOSQUITO_TAXON_ID = 112
 _INAT_OBSERVATIONS = "https://api.inaturalist.org/v1/observations"
 _INAT_TICKS_TAXON_ID = 51672
 _UTC_TOKEN_PATTERN = re.compile(r"^UTC([+-])(\d{1,2})$")
+_NOTO_EMOJI_BASE = "https://fonts.gstatic.com/s/e/notoemoji/latest"
+
+_METRIC_ICON_EMOJI: dict[str, str] = {
+    "sensor.precipitation_probability": "1f327_fe0f",
+    "sensor.precipitation": "1f327_fe0f",
+    "sensor.uv_index": "1f31e",
+    "sensor.rain_next_6h": "1f327_fe0f",
+    "sensor.wind_speed": "1f32a_fe0f",
+    "sensor.pressure": "1f300",
+    "sensor.humidity": "2601_fe0f",
+    "sensor.apparent_temperature": "1f321_fe0f",
+    "sensor.sea_temperature_openmeteo": "1f30a",
+    "sensor.sea_temperature_openmeteo_3h": "1f30a",
+    "sensor.sea_temperature_openmeteo_6h": "1f30a",
+    "sensor.wave_height": "1f30a",
+    "sensor.wave_period": "1f30a",
+    "sensor.pollen_total": "1f33f",
+    "sensor.pollen_birch": "1f33f",
+    "sensor.pollen_alder": "1f33f",
+    "sensor.pollen_grass": "1f33f",
+    "sensor.pollen_olive": "1f33f",
+    "sensor.pollen_ragweed": "1f33f",
+    "sensor.pollen_ambrosia": "1f343",
+    "sensor.pollen_mugwort": "1f33f",
+    "sensor.ambrosia_risk": "1f343",
+    "sensor.allergy_index": "1f927",
+    "sensor.asthma_risk": "1f637",
+    "sensor.air_quality_european_aqi": "1f637",
+    "sensor.air_quality_pm25": "1f637",
+    "sensor.air_quality_pm10": "1f637",
+    "sensor.air_quality_ozone": "1f637",
+    "sensor.air_quality_no2": "1f637",
+    "sensor.air_quality_so2": "1f637",
+    "sensor.air_quality_co": "1f637",
+    "sensor.waqi_barcelona": "1f637",
+    "sensor.saharan_dust_level": "1faa8",
+    "sensor.saharan_dust_forecast_6h": "1faa8",
+    "sensor.beach_comfort_index": "1f30a",
+    "sensor.beach_danger_index": "1f6a9",
+    "sensor.beach_flag_calculated": "1f6a9",
+    "sensor.beach_crowding_estimate": "1f30a",
+    "sensor.beach_recommendation": "1f6a9",
+    "sensor.jellyfish_risk": "1f41f",
+    "sensor.jellyfish_official_risk": "1f41f",
+    "sensor.jellyfish_official_status": "1f41f",
+    "sensor.jellyfish_species_count": "1f41f",
+    "sensor.jellyfish_last_update": "1f41f",
+    "sensor.jellyfish_icon_code": "1f41f",
+    "sensor.jellyfish_nearest_beach": "1f30a",
+    "sensor.jellyfish_nearest_beach_distance": "1f30a",
+    "sensor.beach_water_quality_official": "1f30a",
+    "sensor.beach_water_temperature_official": "1f321_fe0f",
+    "sensor.tiger_mosquito_risk": "1f99f",
+    "sensor.tiger_mosquito_index": "1f99f",
+    "sensor.mosquito_index": "1f99f",
+    "sensor.tiger_mosquito_reports_30d": "1f99f",
+    "sensor.tiger_mosquito_reports_180d": "1f99f",
+    "sensor.tiger_mosquito_high_confidence": "1f99f",
+    "sensor.tiger_mosquito_confidence_avg": "1f99f",
+    "sensor.tiger_mosquito_last_report": "1f99f",
+    "sensor.tiger_mosquito_icon_url": "1f99f",
+    "sensor.tick_risk": "1f41b",
+    "sensor.tick_index": "1f41b",
+    "sensor.tick_reports_30d": "1f41b",
+    "sensor.tick_reports_180d": "1f41b",
+    "sensor.tick_last_report": "1f41b",
+    "sensor.tick_source": "1f41b",
+    "sensor.tick_icon_url": "1f41b",
+}
 
 
 def _normalize_timezone_token(raw_token: str) -> str | None:
@@ -216,6 +285,45 @@ def _coerce_state_value(raw_state: str, template_value: Any) -> Any:
     if isinstance(template_value, float):
         return round(_safe_float(raw_state, template_value), 2)
     return raw_state
+
+
+def _noto_icon_bundle(emoji_code: str) -> dict[str, str]:
+    """Return PNG/WebP/GIF icon URLs for a Noto Emoji code."""
+    base = f"{_NOTO_EMOJI_BASE}/{emoji_code}/512"
+    return {
+        "emoji_code": emoji_code,
+        "icon_url": f"{base}.png",
+        "icon_webp_url": f"{base}.webp",
+        "icon_gif_url": f"{base}.gif",
+    }
+
+
+def _weather_emoji_code(weather_code: int | None) -> str:
+    """Map Open-Meteo weather code to an emoji icon code."""
+    if weather_code is None:
+        return "2601_fe0f"
+    if weather_code == 0:
+        return "1f31e"
+    if weather_code in {1, 2}:
+        return "1f329_fe0f"
+    if weather_code in {3}:
+        return "2601_fe0f"
+    if weather_code in {45, 48}:
+        return "1f300"
+    if weather_code in {51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82}:
+        return "1f327_fe0f"
+    if weather_code in {71, 73, 75, 77, 85, 86}:
+        return "2744_fe0f"
+    if weather_code in {95, 96, 99}:
+        return "1f329_fe0f"
+    return "2601_fe0f"
+
+
+def _metric_emoji_code(entity_id: str, weather_code: int | None) -> str | None:
+    """Pick emoji icon code for a metric."""
+    if entity_id in {"sensor.weather_summary", "sensor.weather_code"}:
+        return _weather_emoji_code(weather_code)
+    return _METRIC_ICON_EMOJI.get(entity_id)
 
 
 def _weather_summary(temp_c: float, rain_prob: float) -> str:
@@ -711,27 +819,19 @@ class AuraSnapshotProvider:
             tick_baseline_index=tick_index_for_forecast,
         )
         overrides = self._apply_ha_sources(metrics)
+        self._decorate_entity_icons(metrics)
+        self._decorate_forecast_icons(forecast_daily)
 
         timezone_clock = _build_multi_timezone_clock(
             str(self._options.get(CONF_TIMEZONES, DEFAULT_TIMEZONES))
         )
-        external_icons: dict[str, Any] = {}
-        if isinstance(jellyfish_data, dict):
-            external_icons["jellyfish"] = {
-                "status_icon_code": jellyfish_data.get("status_icon"),
-                "nearest_beach": jellyfish_data.get("beach_name"),
-            }
-        if isinstance(mosquito_data, dict):
-            external_icons["tiger_mosquito"] = {
-                "icon": "mdi:mosquito",
-                "latest_report": mosquito_data.get("latest_received_at"),
-            }
-        if isinstance(tick_data, dict):
-            external_icons["ticks"] = {
-                "taxon": tick_data.get("taxon_name"),
-                "icon_url": tick_data.get("icon_url"),
-                "source": "iNaturalist",
-            }
+        icon_catalog = self._build_icon_catalog(
+            metrics=metrics,
+            forecast_daily=forecast_daily,
+            jellyfish_data=jellyfish_data,
+            mosquito_data=mosquito_data,
+            tick_data=tick_data,
+        )
 
         return {
             "meta": {
@@ -755,7 +855,7 @@ class AuraSnapshotProvider:
                     "tiger_mosquito": "ok" if mosquito_err is None else mosquito_err,
                     "ticks": "ok" if tick_err is None else tick_err,
                 },
-                "icons": external_icons,
+                "icons": icon_catalog,
                 "ha_overrides": overrides,
                 "forecast_count": len(forecast_daily),
             },
@@ -923,6 +1023,7 @@ class AuraSnapshotProvider:
         confidence_count = 0
         latest_received_at: datetime | None = None
         latest_uuid: str | None = None
+        icon_url: str | None = None
 
         for row in results_180:
             if not isinstance(row, dict):
@@ -946,6 +1047,24 @@ class AuraSnapshotProvider:
                 if confidence is not None:
                     confidence_sum += _safe_float(confidence, 0.0)
                     confidence_count += 1
+
+            if icon_url is None:
+                if isinstance(ident, dict):
+                    ident_photo = ident.get("photo")
+                    if isinstance(ident_photo, dict):
+                        candidate = ident_photo.get("url")
+                        if isinstance(candidate, str) and candidate.startswith(("http://", "https://")):
+                            icon_url = candidate
+                if icon_url is None:
+                    photos = row.get("photos")
+                    if isinstance(photos, list):
+                        for photo in photos:
+                            if not isinstance(photo, dict):
+                                continue
+                            candidate = photo.get("url")
+                            if isinstance(candidate, str) and candidate.startswith(("http://", "https://")):
+                                icon_url = candidate
+                                break
 
         high_conf_pct = 0
         if results_180:
@@ -972,6 +1091,7 @@ class AuraSnapshotProvider:
                 "latest_received_at": latest_iso,
                 "latest_days_ago": latest_days_ago,
                 "latest_uuid": latest_uuid,
+                "icon_url": icon_url,
             },
             error_text,
         )
@@ -1381,6 +1501,7 @@ class AuraSnapshotProvider:
         latest_report = "unknown"
         latest_days_ago = 999
         source = "internal_model"
+        icon_url = None
 
         if isinstance(mosquito_data, dict):
             source = "mosquito_alert_api"
@@ -1390,6 +1511,7 @@ class AuraSnapshotProvider:
             confidence_avg_pct = _safe_int(mosquito_data.get("confidence_avg_pct"), 0)
             latest_report = str(mosquito_data.get("latest_received_at") or "unknown")
             latest_days_ago = _safe_int(mosquito_data.get("latest_days_ago"), 999)
+            icon_url = mosquito_data.get("icon_url")
 
         observation_boost = min(count_30d * 4, 42) + min(count_180d, 30)
         confidence_adjustment = int(round((high_conf_pct - 50) / 5))
@@ -1475,6 +1597,13 @@ class AuraSnapshotProvider:
                     "value": latest_report,
                     "source": source,
                     "icon": "mdi:clock-outline",
+                },
+                {
+                    "entity_id": "sensor.tiger_mosquito_icon_url",
+                    "name": "Tiger mosquito icon URL",
+                    "value": icon_url if isinstance(icon_url, str) and icon_url else "unavailable",
+                    "source": source,
+                    "icon": "mdi:image-outline",
                 },
             ],
             mosquito_index,
@@ -1977,6 +2106,154 @@ class AuraSnapshotProvider:
             )
 
         return result
+
+    def _decorate_entity_icons(self, metrics: list[dict[str, Any]]) -> None:
+        """Attach icon URLs (PNG/WebP/GIF) to each metric."""
+        weather_code: int | None = None
+        for metric in metrics:
+            if metric.get("entity_id") != "sensor.weather_code":
+                continue
+            weather_code = _optional_int(metric.get("value"))
+            break
+
+        for metric in metrics:
+            entity_id = metric.get("entity_id")
+            if not isinstance(entity_id, str):
+                continue
+            emoji_code = _metric_emoji_code(entity_id, weather_code)
+            if emoji_code is None:
+                continue
+
+            bundle = _noto_icon_bundle(emoji_code)
+            metric["icon_emoji"] = bundle["emoji_code"]
+            metric["icon_url"] = bundle["icon_url"]
+            metric["icon_webp_url"] = bundle["icon_webp_url"]
+            metric["icon_gif_url"] = bundle["icon_gif_url"]
+
+            value = metric.get("value")
+            if entity_id == "sensor.tick_icon_url":
+                if isinstance(value, str) and value.startswith(("http://", "https://")):
+                    metric["icon_external_url"] = value
+            elif entity_id == "sensor.tiger_mosquito_icon_url":
+                if isinstance(value, str) and value.startswith(("http://", "https://")):
+                    metric["icon_external_url"] = value
+            elif entity_id == "sensor.jellyfish_icon_code":
+                if isinstance(value, str) and value not in {"", "unknown", "unavailable"}:
+                    metric["icon_external_code"] = value
+
+    def _decorate_forecast_icons(self, forecast_daily: list[dict[str, Any]]) -> None:
+        """Attach icon URLs to each forecast day row."""
+        mosquito_bundle = _noto_icon_bundle("1f99f")
+        jellyfish_bundle = _noto_icon_bundle("1f41f")
+        tick_bundle = _noto_icon_bundle("1f41b")
+
+        for day in forecast_daily:
+            if not isinstance(day, dict):
+                continue
+            weather_code = _optional_int(day.get("weather_code"))
+            weather_bundle = _noto_icon_bundle(_weather_emoji_code(weather_code))
+
+            day["weather_icon_emoji"] = weather_bundle["emoji_code"]
+            day["weather_icon_url"] = weather_bundle["icon_url"]
+            day["weather_icon_webp_url"] = weather_bundle["icon_webp_url"]
+            day["weather_icon_gif_url"] = weather_bundle["icon_gif_url"]
+
+            day["mosquito_icon_gif_url"] = mosquito_bundle["icon_gif_url"]
+            day["jellyfish_icon_gif_url"] = jellyfish_bundle["icon_gif_url"]
+            day["tick_icon_gif_url"] = tick_bundle["icon_gif_url"]
+
+    def _build_icon_catalog(
+        self,
+        *,
+        metrics: list[dict[str, Any]],
+        forecast_daily: list[dict[str, Any]],
+        jellyfish_data: dict[str, Any] | None,
+        mosquito_data: dict[str, Any] | None,
+        tick_data: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Build icon catalog for external reuse."""
+        weather_code: int | None = None
+        for metric in metrics:
+            if metric.get("entity_id") == "sensor.weather_code":
+                weather_code = _optional_int(metric.get("value"))
+                break
+        weather_bundle = _noto_icon_bundle(_weather_emoji_code(weather_code))
+
+        entity_icons: dict[str, dict[str, Any]] = {}
+        icon_keys = (
+            "icon",
+            "icon_emoji",
+            "icon_url",
+            "icon_webp_url",
+            "icon_gif_url",
+            "icon_external_url",
+            "icon_external_code",
+        )
+        for metric in metrics:
+            entity_id = metric.get("entity_id")
+            if not isinstance(entity_id, str):
+                continue
+            payload: dict[str, Any] = {}
+            for key in icon_keys:
+                value = metric.get(key)
+                if isinstance(value, str) and value:
+                    payload[key] = value
+            if payload:
+                entity_icons[entity_id] = payload
+
+        catalog: dict[str, Any] = {
+            "weather_current": {
+                "weather_code": weather_code if weather_code is not None else "unavailable",
+                **weather_bundle,
+            },
+            "categories": {
+                "weather": weather_bundle,
+                "marine": _noto_icon_bundle("1f30a"),
+                "allergy": _noto_icon_bundle("1f927"),
+                "air_quality": _noto_icon_bundle("1f637"),
+                "jellyfish": _noto_icon_bundle("1f41f"),
+                "tiger_mosquito": _noto_icon_bundle("1f99f"),
+                "ticks": _noto_icon_bundle("1f41b"),
+            },
+            "entities": entity_icons,
+        }
+
+        if isinstance(jellyfish_data, dict):
+            catalog["jellyfish"] = {
+                "status_icon_code": jellyfish_data.get("status_icon"),
+                "nearest_beach": jellyfish_data.get("beach_name"),
+                **_noto_icon_bundle("1f41f"),
+            }
+        if isinstance(mosquito_data, dict):
+            catalog["tiger_mosquito"] = {
+                "latest_report": mosquito_data.get("latest_received_at"),
+                "external_icon_url": mosquito_data.get("icon_url"),
+                **_noto_icon_bundle("1f99f"),
+            }
+        if isinstance(tick_data, dict):
+            catalog["ticks"] = {
+                "taxon": tick_data.get("taxon_name"),
+                "external_icon_url": tick_data.get("icon_url"),
+                "source": "iNaturalist",
+                **_noto_icon_bundle("1f41b"),
+            }
+
+        if forecast_daily:
+            catalog["forecast_daily"] = [
+                {
+                    "date": day.get("date"),
+                    "weather_code": day.get("weather_code"),
+                    "weather_icon_url": day.get("weather_icon_url"),
+                    "weather_icon_gif_url": day.get("weather_icon_gif_url"),
+                    "mosquito_icon_gif_url": day.get("mosquito_icon_gif_url"),
+                    "jellyfish_icon_gif_url": day.get("jellyfish_icon_gif_url"),
+                    "tick_icon_gif_url": day.get("tick_icon_gif_url"),
+                }
+                for day in forecast_daily
+                if isinstance(day, dict)
+            ]
+
+        return catalog
 
     def _apply_ha_sources(self, metrics: list[dict[str, Any]]) -> dict[str, int]:
         """Apply optional HA entity mappings on top of internal metrics."""

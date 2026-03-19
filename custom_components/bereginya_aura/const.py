@@ -1,7 +1,7 @@
 """Constants for the Beregynya AURA integration."""
 
 DOMAIN = "bereginya_aura"
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 
 API_ENDPOINT = "/api/bereginya_aura/v1/snapshot"
 FRONTEND_STATIC_BASE = "/bereginya-aura"
@@ -96,6 +96,7 @@ SOURCE_KEY_ALIASES = {
     "tiger_mosquito_high_confidence": "sensor.tiger_mosquito_high_confidence",
     "tiger_mosquito_confidence_avg": "sensor.tiger_mosquito_confidence_avg",
     "tiger_mosquito_last_report": "sensor.tiger_mosquito_last_report",
+    "tiger_mosquito_icon_url": "sensor.tiger_mosquito_icon_url",
     "tick_risk": "sensor.tick_risk",
     "tick_index": "sensor.tick_index",
     "tick_reports_30d": "sensor.tick_reports_30d",

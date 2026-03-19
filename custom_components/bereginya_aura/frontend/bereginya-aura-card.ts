@@ -194,6 +194,65 @@ class BeregynyaAuraCard extends HTMLElement {
     return Math.max(15_000, configured * 1000);
   }
 
+  private _url(value: any): string | null {
+    if (typeof value !== "string") {
+      return null;
+    }
+    const raw = value.trim();
+    if (!raw) {
+      return null;
+    }
+    if (raw.startsWith("http://") || raw.startsWith("https://")) {
+      return raw;
+    }
+    return null;
+  }
+
+  private _entityIconSuffix(entity: any): string {
+    if (this._config.show_icons !== true) {
+      return entity.icon ? ` _[${entity.icon}]_` : "";
+    }
+    const preferGif = this._config.prefer_gif_icons !== false;
+    const gif = this._url(entity.icon_gif_url);
+    const img = this._url(entity.icon_url) || this._url(entity.icon_webp_url);
+    const ext = this._url(entity.icon_external_url);
+    const primary = preferGif ? gif || img || ext : img || gif || ext;
+
+    const links: string[] = [];
+    if (primary) {
+      links.push(`[icon](${primary})`);
+    }
+    if (gif && gif !== primary) {
+      links.push(`[gif](${gif})`);
+    }
+    if (img && img !== primary) {
+      links.push(`[img](${img})`);
+    }
+    if (ext && ext !== primary && ext !== gif && ext !== img) {
+      links.push(`[src](${ext})`);
+    }
+    const mdi = entity.icon ? ` \`${entity.icon}\`` : "";
+    if (links.length > 0) {
+      return ` _${links.join(" / ")}_${mdi}`;
+    }
+    return entity.icon ? ` _[${entity.icon}]_` : "";
+  }
+
+  private _forecastIconSuffix(day: any): string {
+    if (this._config.show_icons !== true) {
+      return "";
+    }
+    const preferGif = this._config.prefer_gif_icons !== false;
+    const gif = this._url(day.weather_icon_gif_url);
+    const img = this._url(day.weather_icon_url);
+    const primary = preferGif ? gif || img : img || gif;
+    if (!primary) {
+      return "";
+    }
+    const extra = gif && img && gif !== img ? ` / [img](${img})` : "";
+    return ` _[weather](${primary})${extra}_`;
+  }
+
   private _render() {
     const title = this._config.title || this._t("titleDefault");
     const lines: string[] = [`# ${title}`, ""];
@@ -242,7 +301,7 @@ class BeregynyaAuraCard extends HTMLElement {
         const unit = entity.unit ? ` ${entity.unit}` : "";
         const source = entity.source ? ` _(source: ${entity.source})_` : "";
         const sourceEntity = entity.source_entity ? ` _(${entity.source_entity})_` : "";
-        const icon = entity.icon && this._config.show_icons === true ? ` _[${entity.icon}]_` : "";
+        const icon = this._entityIconSuffix(entity);
         lines.push(
           `- \`${entity.entity_id}\`: **${this._value(entity.value)}${unit}**${source}${sourceEntity}${icon}`,
         );
@@ -253,8 +312,9 @@ class BeregynyaAuraCard extends HTMLElement {
         lines.push("");
         lines.push(`## ${this._t("forecast")} ${daily.length}d`);
         for (const day of daily) {
+          const forecastIcon = this._forecastIconSuffix(day);
           lines.push(
-            `- \`${this._value(day.date)}\`: ${this._value(day.temp_min)}/${this._value(day.temp_max)} degC, rain ${this._value(day.rain_probability_max)}% (${this._value(day.rain_sum_mm)} mm), UV ${this._value(day.uv_max)}, sea ${this._value(day.sea_temp_avg)} degC, AQI ${this._value(day.aqi_max)}, allergy ${this._value(day.allergy_index)}/100, asthma ${this._value(day.asthma_risk)}, beach ${this._value(day.beach_score)}/10 (${this._value(day.beach_flag)}), mosquito ${this._value(day.mosquito_risk_est)}, jellyfish ${this._value(day.jellyfish_risk_est)}, ticks ${this._value(day.tick_risk_est)}`,
+            `- \`${this._value(day.date)}\`${forecastIcon}: ${this._value(day.temp_min)}/${this._value(day.temp_max)} degC, rain ${this._value(day.rain_probability_max)}% (${this._value(day.rain_sum_mm)} mm), UV ${this._value(day.uv_max)}, sea ${this._value(day.sea_temp_avg)} degC, AQI ${this._value(day.aqi_max)}, allergy ${this._value(day.allergy_index)}/100, asthma ${this._value(day.asthma_risk)}, beach ${this._value(day.beach_score)}/10 (${this._value(day.beach_flag)}), mosquito ${this._value(day.mosquito_risk_est)}, jellyfish ${this._value(day.jellyfish_risk_est)}, ticks ${this._value(day.tick_risk_est)}`,
           );
         }
       }
