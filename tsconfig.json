@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM"],
+    "strict": false,
+    "skipLibCheck": true,
+    "allowJs": false,
+    "noEmit": true,
+    "useDefineForClassFields": true
+  },
+  "include": [
+    "custom_components/bereginya_aura/frontend/bereginya-aura-card.ts"
+  ]
+}

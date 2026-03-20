@@ -8,6 +8,7 @@ entities. It can optionally reuse selected HA entities in `hybrid` mode.
 ## What it does
 
 - Serves own API: `/api/bereginya_aura/v1/snapshot`
+- Uses persistent file cache in `.storage/bereginya_aura_snapshot.json` for fast startup after HA restart
 - Pulls core data from Open-Meteo directly (weather, marine, air quality, pollen, dust)
 - Pulls official jellyfish/beach state for nearest beach from PlatgesCat (ACA)
 - Pulls tiger mosquito observations around home point from Mosquito Alert API
@@ -31,10 +32,27 @@ entities. It can optionally reuse selected HA entities in `hybrid` mode.
 - Exposes icon catalog for all metrics in snapshot `meta.icons.entities`
 - Adds `icon_url` + `icon_gif_url` for each entity (GIF preferred support)
 - Supports extra timezone clocks via `timezones: "UTC+01,UTC+03,UTC-05"`
+- Adds config flags `debug` and `public_sensor`
+- If `public_sensor: true`, publishes snapshot metrics as `sensor.bereginya_aura_*`
 - No synthetic substitute values: if upstream data is missing, metrics are `unavailable`
 - Calculates derived metrics internally (weather summary, beach indexes, recommendation)
 - Uses only HA home position (`latitude`, `longitude`, `elevation`, `timezone`) as base input
 - Optionally overrides selected metrics from HA entities via mapping
+
+## Unified sensor categories (5)
+
+To keep dashboards and automations simple, all AURA sensors are grouped into 5 top-level categories:
+
+- `sea_beach`: sea and beach safety
+  Sensors: `sensor.sea_temperature_*`, `sensor.wave_*`, `sensor.beach_*`, `sensor.jellyfish_*`, `sensor.rip_current_*`, `sensor.tide_*`, `sensor.ocean_current_*`, `sensor.current_risk`, `sensor.algae_*`
+- `bio_allergy`: allergens and biological bite risks
+  Sensors: `sensor.pollen_*`, `sensor.ambrosia_risk`, `sensor.allergy_index`, `sensor.asthma_risk`, `sensor.tiger_mosquito_*`, `sensor.mosquito_index`, `sensor.tick_*`, `sensor.bite_*`
+- `climate_stress`: UV/heat/hydration/air/smoke stress
+  Sensors: `sensor.uv_dose_*`, `sensor.astro_uv_*`, `sensor.astro_solar_elevation`, `sensor.heat_*`, `sensor.wbgt_c`, `sensor.dehydration_*`, `sensor.thunderstorm_*`, `sensor.air_quality_*`, `sensor.saharan_dust_*`, `sensor.smoke_*`
+- `hazards_alerts`: earthquakes, wildfire, civil alerts
+  Sensors: `sensor.earthquake_*`, `sensor.wildfire_*`, `sensor.hazard_*`, `sensor.cap_*`
+- `planner_personal`: personal planner and persona outputs
+  Sensors: `sensor.aura_*`, `sensor.aura_tracker_*`, `sensor.aura_{persona}_*` (daily plan, now-vs-3h, beach pack, smart notification, personal UV/heat profile)
 
 ## Repository layout
 
@@ -181,6 +199,8 @@ bereginya_aura:
   source_mode: hybrid
   refresh_seconds: 600
   forecast_days: 7
+  debug: false
+  public_sensor: false
   timezones: "UTC+01,UTC+03,UTC-05"
   daily_plan: true
   planner_mode: normal
@@ -244,6 +264,10 @@ Planner options:
 - `planner_mode`: global default mode for personas without own mode
 - `tracking_entities`: extra HA entities for UV dose tracking (list of strings or dict with `id`, `entity_id`, `uv_exposure_factor`)
 - `uv_tracking_entities`: alias for `tracking_entities`
+- `debug`: reserved debug flag (`false` by default)
+- `public_sensor`: export all calculated metrics into HA states
+  - `true`/`public`: publish as `sensor.bereginya_aura_*`
+  - `false`/`private`: keep metrics private to card API only
 
 `skin_type` reference:
 
@@ -277,6 +301,20 @@ prefer_gif_icons: true
 Card supports languages: `ru` (default), `en`, `ua`, `es`.
 Source of truth for frontend is TypeScript (`frontend/bereginya-aura-card.ts`).
 
+## Architecture
+
+Snapshot runtime is split into focused modules under `custom_components/bereginya_aura/snapshot/`:
+
+- `options.py` normalizes YAML/config-entry options.
+- `shared.py` holds generic math, time, icon and transcript helpers.
+- `fetchers.py` contains upstream HTTP fetch logic.
+- `metrics_external.py` builds weather, marine, pollen, CAP, fire, quake and other external metrics.
+- `metrics_persona.py` builds per-person planner, UV dose and exposure metrics.
+- `metrics_core.py` assembles final transcript categories, HA publish mode and snapshot extras.
+- `provider.py` coordinates cache, refresh lifecycle and final snapshot assembly.
+
+This keeps the public provider surface stable while making the data pipeline easier to change safely.
+
 ## Service
 
 Force refresh cache:
@@ -289,4 +327,58 @@ Force refresh cache:
 2. Install integration.
 3. Add `bereginya_aura:` block to `configuration.yaml`.
 4. Restart Home Assistant.
-5. Add `custom:bereginya-aura` card to dashboard.
+5. On storage-mode Lovelace, AURA auto-registers its frontend resource in dashboard resources.
+6. Add `custom:bereginya-aura` card to dashboard.
+7. If the browser still shows an old card state after first install/update, do a hard reload.
+
+## Workspace Flow
+
+In this workspace the live Home Assistant config is the operational source of truth.
+`distrib/bereginya-aura` is the public OSS mirror/release repository and must be synced from HA
+before PR and release work.
+
+Main flow:
+
+```bash
+make diff-ha
+make sync-from-ha
+make lint
+make test
+make build
+```
+
+## Tests
+
+Integration runtime smoke tests use real Home Assistant runtime and real upstream APIs.
+They do not mock external weather/marine/air sources.
+
+```bash
+make test
+make test-e2e
+```
+
+Sync the repository from the live HA runtime copy:
+
+```bash
+make diff-ha
+make sync-from-ha
+```
+
+Install repository contents into a target HA config:
+
+```bash
+make install-local
+```
+
+Override target config directory if needed:
+
+```bash
+make install-local LOCAL_HA_CONFIG=/path/to/ha-config
+```
+
+## CI
+
+Repository automation is expected to run through GitHub Actions:
+
+- `ci.yml` validates PRs with lint, artifact checks, and frontend build
+- `release.yml` packages the repository for tagged releases or manual release runs

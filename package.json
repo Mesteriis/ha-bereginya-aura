@@ -1,0 +1,17 @@
+{
+  "name": "ha-bereginya-aura",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit --pretty false",
+    "build:frontend": "node scripts/build-frontend.mjs",
+    "check:frontend-artifacts": "node scripts/build-frontend.mjs --check"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0",
+    "typescript": "^5.7.3"
+  }
+}
