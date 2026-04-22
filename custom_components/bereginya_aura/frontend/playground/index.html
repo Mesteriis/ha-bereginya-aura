@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Beregynya AURA Playground</title>
+    <link rel="stylesheet" href="./playground.css" />
+  </head>
+  <body>
+    <main class="playground">
+      <section class="playground-sidebar">
+        <h1>AURA Playground</h1>
+        <p>
+          Правьте структуру в этом файле, а визуальные параметры в
+          <code>playground.css</code> или в runtime-файле
+          <code>../aura-card.styles.ts</code>.
+        </p>
+        <ul>
+          <li>Основная runtime-разметка: <code>../aura-card.template.ts</code></li>
+          <li>Основные runtime-стили: <code>../aura-card.styles.ts</code></li>
+          <li>Runtime sync layout: <code>runtime-main.html</code></li>
+          <li>Runtime sync CSS overrides: <code>runtime-overrides.css</code></li>
+          <li>Сгенерировать TS из playground: <code>make sync-playground</code></li>
+          <li>Этот playground нужен для быстрого ручного выравнивания.</li>
+        </ul>
+      </section>
+
+      <ha-card class="shell">
+        <div class="surface">
+          <section class="panel stage">
+            <button class="hero-trigger">
+              <div class="hero">
+                <div class="hero-art">
+                  <span class="play-icon">⛅</span>
+                </div>
+                <div class="hero-body">
+                  <div class="hero-mainline">
+                    <div class="hero-copy">
+                      <div class="hero-heading">Холодно</div>
+                      <div class="hero-verdict tone-safe">
+                        <span class="play-icon-inline">⚑</span>
+                        <span>Зелёный</span>
+                      </div>
+                    </div>
+                    <div class="hero-temp">
+                      <div class="hero-temp-main">11,8°C</div>
+                    </div>
+                  </div>
+                  <div class="hero-secondaryline">14,9° / 7,7° • Комфорт 8/10</div>
+                  <div class="hero-metrics">
+                    <div class="hero-metric">
+                      <span class="play-icon-inline">〰</span>
+                      <div class="hero-metric-value">2,8 m/s</div>
+                    </div>
+                    <div class="hero-metric">
+                      <span class="play-icon-inline">≈</span>
+                      <div class="hero-metric-value">14,6°C</div>
+                    </div>
+                    <div class="hero-metric">
+                      <span class="play-icon-inline">◔</span>
+                      <div class="hero-metric-value">66%</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </button>
+          </section>
+
+          <div class="secondary-rail">
+            <section class="subsection">
+              <div class="section-head">
+                <div class="section-title">Решения</div>
+              </div>
+              <div class="planner-strip">
+                <div class="chip chip-tone-safe">
+                  <span class="play-icon-inline">✓</span>
+                  <div class="chip-main">
+                    <div class="chip-label">Лучше сейчас</div>
+                    <div class="chip-detail">Комфортное окно для прогулки</div>
+                  </div>
+                </div>
+                <div class="chip chip-tone-warning">
+                  <span class="play-icon-inline">☼</span>
+                  <div class="chip-main">
+                    <div class="chip-label">УФ пик позже</div>
+                    <div class="chip-detail">После 13:00 будет жёстче</div>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section class="subsection actions-card">
+              <div class="detail-strip">
+                <button class="detail-btn"><span class="play-icon-inline">◉</span></button>
+                <button class="detail-btn"><span class="play-icon-inline">☀</span></button>
+                <button class="detail-btn"><span class="play-icon-inline">〰</span></button>
+                <button class="detail-btn"><span class="play-icon-inline">⚕</span></button>
+                <button class="detail-btn"><span class="play-icon-inline">!</span></button>
+              </div>
+            </section>
+          </div>
+        </div>
+      </ha-card>
+    </main>
+  </body>
+</html>

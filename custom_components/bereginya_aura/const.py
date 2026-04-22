@@ -1,34 +1,16 @@
 """Constants for the Beregynya AURA integration."""
 
-from pathlib import Path
-
 DOMAIN = "bereginya_aura"
-VERSION = "0.8.0"
+VERSION = "0.6.0"
 
 API_ENDPOINT = "/api/bereginya_aura/v1/snapshot"
 FRONTEND_STATIC_BASE = "/bereginya-aura"
-FRONTEND_DIR = "frontend"
-FRONTEND_MODULE_PATH = f"{FRONTEND_STATIC_BASE}/bereginya-aura-card.js"
-
-
-def _frontend_module_url() -> str:
-    """Return a cache-busting URL for the single shipped frontend bundle."""
-    try:
-        frontend_file = Path(__file__).resolve().parent / FRONTEND_DIR / "bereginya-aura-card.js"
-        version = int(frontend_file.stat().st_mtime)
-        return f"{FRONTEND_MODULE_PATH}?v={version}"
-    except Exception:  # noqa: BLE001
-        return FRONTEND_MODULE_PATH
-
-
-FRONTEND_MODULE_URL = _frontend_module_url()
+FRONTEND_MODULE_URL = f"{FRONTEND_STATIC_BASE}/bereginya-aura-card.js?v={VERSION}"
 
 DATA_FRONTEND_REGISTERED = "frontend_registered"
-DATA_FRONTEND_REGISTRATION = "frontend_registration"
 DATA_VIEW_REGISTERED = "view_registered"
 DATA_PROVIDER = "provider"
 DATA_OPTIONS = "options"
-DATA_REFRESH_UNSUB = "refresh_unsub"
 
 CONF_SOURCE_MODE = "source_mode"
 CONF_REFRESH_SECONDS = "refresh_seconds"
@@ -41,8 +23,6 @@ CONF_DALY_PLAN = "daly_plan"
 CONF_PLANNER_MODE = "planner_mode"
 CONF_TRACKING_ENTITIES = "tracking_entities"
 CONF_UV_TRACKING_ENTITIES = "uv_tracking_entities"
-CONF_DEBUG = "debug"
-CONF_PUBLIC_SENSOR = "public_sensor"
 
 PLANNER_MODE_NORMAL = "normal"
 PLANNER_MODE_CHILD = "child"
@@ -73,8 +53,6 @@ DEFAULT_TIMEZONES = ""
 DEFAULT_DAILY_PLAN = True
 DEFAULT_PLANNER_MODE = PLANNER_MODE_NORMAL
 DEFAULT_TRACKING_ENTITIES: list[dict[str, object]] = []
-DEFAULT_DEBUG = False
-DEFAULT_PUBLIC_SENSOR = False
 
 SERVICE_REFRESH_SNAPSHOT = "refresh_snapshot"
 

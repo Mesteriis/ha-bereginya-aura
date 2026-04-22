@@ -1,0 +1,33 @@
+<ha-card class="shell" style={{scope.ctx.themeStyle}}>
+  <div class="surface {{scope.surfaceClass}}">
+    <section class="panel stage">
+      <button
+        class="hero-trigger"
+        @click={{() => scope.ctx.openOverlay('forecast')}}
+        aria-label={{scope.heroAriaLabel}}
+      >
+        <div class="hero">
+          <div class="hero-art">{{scope.heroArt}}</div>
+          <div class="hero-body">
+            <div class="hero-mainline">
+              <div class="hero-copy">
+                <div class="hero-heading">{{scope.vm.hero.summary}}</div>
+                <div class="hero-verdict tone-{{scope.vm.hero.verdictTone}}">
+                  <ha-icon icon="mdi:flag-variant-outline"></ha-icon>
+                  <span>{{scope.vm.hero.verdict}}</span>
+                </div>
+              </div>
+              <div class="hero-temp">
+                <div class="hero-temp-main">{{scope.vm.hero.temperature}}</div>
+              </div>
+            </div>
+            {{scope.secondaryLineBlock}}
+            <div class="hero-metrics">{{scope.metricsBlock}}</div>
+          </div>
+        </div>
+      </button>
+    </section>
+    {{scope.secondaryRail}}
+  </div>
+  {{scope.overlay}}
+</ha-card>

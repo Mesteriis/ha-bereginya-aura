@@ -11,6 +11,6 @@
     "useDefineForClassFields": true
   },
   "include": [
-    "custom_components/bereginya_aura/frontend/bereginya-aura-card.ts"
+    "custom_components/bereginya_aura/frontend/**/*.ts"
   ]
 }

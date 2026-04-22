@@ -1,0 +1,14 @@
+/*
+  This file is appended after aura-card.styles.ts.
+  Use it for quick manual layout tuning from the playground workflow.
+
+  Example:
+
+  .hero {
+    grid-template-columns: 64px minmax(0, 1fr);
+  }
+
+  .hero-temp-main {
+    font-size: 34px;
+  }
+*/

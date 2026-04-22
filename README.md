@@ -63,11 +63,61 @@ custom_components/bereginya_aura/
   const.py
   api.py
   provider.py
+  frontend/aura-card.styles.ts
+  frontend/aura-card.template.ts
+  frontend/playground/index.html
+  frontend/playground/playground.css
   frontend/bereginya-aura-card.ts
   frontend/bereginya-aura-card.js
   frontend/bereginya-aura-card.js.gz
 hacs.json
 ```
+
+## Frontend editing
+
+The Lovelace card frontend is split into separate runtime files:
+
+- `custom_components/bereginya_aura/frontend/aura-card.template.ts`
+  Main Lit markup for the card sections and overlays
+- `custom_components/bereginya_aura/frontend/aura-card.styles.ts`
+  Centralized card styles and responsive layout rules
+- `custom_components/bereginya_aura/frontend/aura-card.playground.generated.ts`
+  Auto-generated bridge module produced from playground sync sources
+- `custom_components/bereginya_aura/frontend/bereginya-aura-card.ts`
+  Runtime wiring only: config, fetching, state, callbacks, registration
+
+For manual layout experiments there is also a static playground:
+
+- `custom_components/bereginya_aura/frontend/playground/index.html`
+- `custom_components/bereginya_aura/frontend/playground/playground.css`
+- `custom_components/bereginya_aura/frontend/playground/runtime-main.html`
+- `custom_components/bereginya_aura/frontend/playground/runtime-overrides.css`
+
+Recommended workflow:
+
+1. Move raw playground layout in `playground/index.html`
+2. Tune raw playground visuals in `playground/playground.css`
+3. Move runtime layout into `playground/runtime-main.html`
+4. Move runtime CSS overrides into `playground/runtime-overrides.css`
+5. Run `make sync-playground`
+6. Rebuild frontend artifacts with `npm run build:frontend` or `make build`
+
+`make sync-playground` regenerates `frontend/aura-card.playground.generated.ts` from the two sync source files above.
+
+Convenience commands:
+
+- `make sync-playground-build`
+  Runs playground sync and frontend rebuild in one step
+- `make sync-playground-live`
+  Runs playground sync, frontend rebuild and local HA install in one step
+
+Important:
+
+- The sync step is placeholder-based, not a full HTML-to-Lit compiler.
+- Use `{{...}}` placeholders in `runtime-main.html` only for simple runtime expressions that are already available in the generated scope.
+- For full dynamic attributes use Lit-like syntax without quotes:
+  `style={{scope.ctx.themeStyle}}`, `@click={{...}}`, `aria-label={{...}}`
+- The sync file is auto-generated and should not be edited directly.
 
 ## API
 
@@ -290,16 +340,33 @@ Card type: `custom:bereginya-aura`
 
 ```yaml
 type: custom:bereginya-aura
-title: Beregynya AURA Transcript
+title: Beregynya AURA
+theme_variant: ocean_glass
+layout_mode: premium
 refresh_seconds: 120
 force_refresh: false
 lang: ru
-show_icons: true
-prefer_gif_icons: true
+show_personas: true
+show_tracking: true
+show_debug: false
+forecast_days: 5
+accent_by_risk: true
 ```
 
 Card supports languages: `ru` (default), `en`, `ua`, `es`.
-Source of truth for frontend is TypeScript (`frontend/bereginya-aura-card.ts`).
+Source of truth for frontend is TypeScript (`frontend/`) with bundled Lit runtime.
+
+Additional optional card config:
+
+- `theme_variant`: `ocean_glass` (default), `aurora_glass`, `sunset_glass`
+- `layout_mode`: `premium` (default) or `compact`
+- `show_personas`: show/hide personas advisor section
+- `show_tracking`: show/hide tracking footer
+- `show_debug`: show collapsible system/debug section
+- `forecast_days`: number of forecast ribbon days rendered in card (`3..7`, default `5`)
+- `accent_by_risk`: use severity accents on hero, chips and domain blocks
+- `debug: true`: switch card into transcript/debug mode instead of premium UI
+- legacy `show_icons` / `prefer_gif_icons` are still accepted for backward compatibility
 
 ## Architecture
 
@@ -314,6 +381,12 @@ Snapshot runtime is split into focused modules under `custom_components/bereginy
 - `provider.py` coordinates cache, refresh lifecycle and final snapshot assembly.
 
 This keeps the public provider surface stable while making the data pipeline easier to change safely.
+
+Frontend card architecture:
+
+- `frontend/bereginya-aura-card.ts` is the Lit-based custom card shell and render layer.
+- `frontend/aura-view-model.ts` normalizes snapshot entities, fallbacks, severity mapping and section view-models.
+- build output remains a single composite Lovelace card resource: `frontend/bereginya-aura-card.js`
 
 ## Service
 

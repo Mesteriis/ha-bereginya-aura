@@ -11,7 +11,7 @@ COMPONENT_DST := $(LOCAL_HA_CONFIG)/custom_components/$(COMPONENT_NAME)
 TEST_PYTEST ?= /tmp/bereginya-aura-test-venv/bin/pytest
 NODE_MODULES_STAMP := node_modules/.package-lock-stamp
 
-.PHONY: lint test build test-e2e install-local sync-from-ha diff-ha clean release-check
+.PHONY: lint test build test-e2e install-local sync-from-ha diff-ha clean release-check sync-playground sync-playground-build sync-playground-live
 
 $(NODE_MODULES_STAMP): package.json package-lock.json
 	$(NPM) ci
@@ -29,6 +29,13 @@ test: $(NODE_MODULES_STAMP)
 
 build: $(NODE_MODULES_STAMP)
 	$(NPM) run build:frontend
+
+sync-playground:
+	node scripts/sync-playground.mjs
+
+sync-playground-build: sync-playground build
+
+sync-playground-live: sync-playground build install-local
 
 test-e2e:
 	PYTHONPATH="$(CURDIR)" "$(TEST_PYTEST)" \

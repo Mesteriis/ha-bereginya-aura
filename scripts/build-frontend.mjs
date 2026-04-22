@@ -19,7 +19,7 @@ const checkOnly = process.argv.includes("--check");
 
 const result = await build({
   entryPoints: [entryPoint],
-  bundle: false,
+  bundle: true,
   charset: "utf8",
   format: "esm",
   legalComments: "none",
